@@ -158,6 +158,11 @@ ServiceInfo(id="my_service", display_name="My Service")  # underscore
 10. **Shutdown**: On graceful shutdown, stops keepalive and optionally deregisters
 11. **Logging**: Logs all registration, ping, and deregistration events
 
+**Readiness gate**: before registering, the service polls its own health endpoint and waits for a 200 response.
+Because `/health` now returns 503 while any health check is unhealthy, a service whose database (or other check)
+is down waits instead of registering as available. See the [health checks guide](health-checks.md) for the status
+code semantics.
+
 ### Keepalive and TTL
 
 Services can be configured to send periodic "ping" requests to the orchestrator to indicate they're still alive. The orchestrator tracks a Time-To-Live (TTL) for each service and automatically removes services that haven't pinged within the TTL window.

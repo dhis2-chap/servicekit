@@ -142,6 +142,15 @@ app = (
 - `unhealthy` > `degraded` > `healthy`
 - Exception in check = `unhealthy` with error message
 
+### HTTP Status Codes
+
+- **200 OK**: overall status is `healthy` or `degraded` (the service can still serve traffic)
+- **503 Service Unavailable**: overall status is `unhealthy`
+
+The response body is identical in both cases, so probes and dashboards can use either the status code or the
+`status` field. The SSE stream endpoint (`/health/$stream`) always responds with 200; the state is carried inside
+each event.
+
 ## Kubernetes Integration
 
 ### Liveness and Readiness Probes
@@ -190,6 +199,26 @@ spec:
 - **Readiness**: Checks if app can serve traffic (shorter intervals, lower threshold)
 - Use `/health` for both probes (not `/health/$stream`)
 - Set appropriate timeouts (3-5 seconds recommended)
+
+### Liveness Versus Readiness
+
+Since `/health` returns 503 when any check is unhealthy, using it as a liveness probe restarts the pod whenever a
+dependency (a database, an upstream API) is down, even though the process itself is fine. Prefer a dependency-free
+liveness endpoint and keep `/health` for readiness.
+
+`BaseServiceBuilder` keeps a single health configuration, so mount the second router directly on the built app:
+
+```python
+from servicekit.api import BaseServiceBuilder, ServiceInfo
+from servicekit.api.routers import HealthRouter
+
+app = BaseServiceBuilder(info=ServiceInfo(id="my-service", display_name="My Service")).with_health().build()
+
+# Liveness: no checks, always 200 while the process can answer
+app.include_router(HealthRouter.create(prefix="/live", tags=["Observability"]))
+```
+
+Then point `livenessProbe` at `/live` and `readinessProbe` at `/health`.
 
 ### Service Mesh Integration
 
@@ -281,8 +310,8 @@ async def health_check_with_timeout(base_url: str, timeout: float = 3.0) -> str:
 backend servicekit_servers
     balance roundrobin
     option httpchk GET /health
+    # /health returns 503 when the service is unhealthy, 200 when healthy or degraded
     http-check expect status 200
-    http-check expect string healthy
 
     server app1 10.0.1.10:8000 check inter 5s rise 2 fall 3
     server app2 10.0.1.11:8000 check inter 5s rise 2 fall 3

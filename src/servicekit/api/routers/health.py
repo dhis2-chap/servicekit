@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from enum import StrEnum
 
+from fastapi import Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -88,10 +89,15 @@ class HealthRouter(Router):
             "",
             summary="Health check",
             response_model=HealthStatus,
+            responses={503: {"model": HealthStatus, "description": "Service is unhealthy"}},
             response_model_exclude_none=self.default_response_model_exclude_none,
         )
-        async def health_check() -> HealthStatus:
-            return await run_health_checks()
+        async def health_check(response: Response) -> HealthStatus:
+            """Return aggregate health status, with 503 when the service is unhealthy."""
+            health_status = await run_health_checks()
+            if health_status.status == HealthState.UNHEALTHY:
+                response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            return health_status
 
         @self.router.get(
             "/$stream",
