@@ -86,6 +86,32 @@ app = (
 )
 ```
 
+### Database Migrations
+
+File-based databases run Alembic migrations on `init()` by default; in-memory databases create tables
+directly from the ORM metadata. The migration bundled with servicekit is a framework baseline: it creates
+only the `alembic_version` table and no application tables. Applications that define their own entities must
+either point migrations at their own migration directory or disable migrations and create tables directly.
+
+```python
+from pathlib import Path
+
+from servicekit import SqliteDatabaseBuilder, get_alembic_dir
+
+# Application-owned migrations
+database = (
+    SqliteDatabaseBuilder.from_file("app.db")
+    .with_migrations(enabled=True, alembic_dir=Path("alembic"))
+    .build()
+)
+
+# No migrations - create tables directly from ORM metadata
+database = SqliteDatabaseBuilder.from_file("app.db").with_migrations(enabled=False).build()
+
+# Path to the migration environment shipped inside the servicekit package
+bundled_migrations = get_alembic_dir()
+```
+
 ### Repository Pattern
 
 ```python
