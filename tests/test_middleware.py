@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ValidationError
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 
 from servicekit.api.middleware import (
     add_error_handlers,
@@ -37,6 +37,14 @@ def app_with_handlers() -> FastAPI:
     async def trigger_db_error() -> None:
         raise SQLAlchemyError("Database connection failed")
 
+    @app.get("/db-error-with-parameters")
+    async def trigger_db_error_with_parameters() -> None:
+        raise OperationalError("SELECT secret FROM t WHERE p = ?", ("hunter2",), Exception("boom"))
+
+    @app.get("/integrity-error")
+    async def trigger_integrity_error() -> None:
+        raise IntegrityError("INSERT INTO t (p) VALUES (?)", ("hunter2",), Exception("duplicate key"))
+
     @app.get("/validation-error")
     async def trigger_validation_error() -> None:
         raise ValidationError.from_exception_data(
@@ -60,22 +68,56 @@ def test_database_error_handler_returns_500(app_with_handlers: FastAPI) -> None:
     response = client.get("/db-error")
 
     assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/problem+json")
     payload = response.json()
-    assert payload["detail"] == "Database error occurred"
-    assert "error" in payload
-    assert "Database connection failed" in payload["error"]
+    assert payload["detail"] == "A database error occurred"
+    assert payload["trace_id"]
+    assert "Database connection failed" not in response.text
+
+
+def test_database_error_handler_hides_sql_and_parameters(app_with_handlers: FastAPI) -> None:
+    """Test that SQL statements and bound parameters never reach the response body."""
+    client = TestClient(app_with_handlers)
+
+    response = client.get("/db-error-with-parameters")
+
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert "hunter2" not in response.text
+    assert "SELECT" not in response.text
+    payload = response.json()
+    assert payload["detail"] == "A database error occurred"
+    assert payload["trace_id"]
+
+
+def test_database_error_handler_maps_integrity_error_to_409(app_with_handlers: FastAPI) -> None:
+    """Test that integrity errors are reported as conflicts."""
+    client = TestClient(app_with_handlers)
+
+    response = client.get("/integrity-error")
+
+    assert response.status_code == 409
+    assert response.headers["content-type"].startswith("application/problem+json")
+    payload = response.json()
+    assert payload["title"] == "Conflict"
+    assert payload["detail"] == "The request conflicts with existing data"
+    assert payload["trace_id"]
+    assert "hunter2" not in response.text
 
 
 def test_validation_error_handler_returns_422(app_with_handlers: FastAPI) -> None:
-    """Test that validation errors return 422 status with proper error message."""
+    """Test that validation errors return 422 status with structured error details."""
     client = TestClient(app_with_handlers)
 
     response = client.get("/validation-error")
 
     assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/problem+json")
     payload = response.json()
-    assert payload["detail"] == "Validation error"
-    assert "errors" in payload
+    assert payload["detail"] == "Request validation failed"
+    assert isinstance(payload["errors"], list)
+    assert payload["errors"][0]["type"] == "missing"
+    assert payload["errors"][0]["loc"] == ["name"]
 
 
 async def test_database_error_handler_direct() -> None:
@@ -86,6 +128,10 @@ async def test_database_error_handler_direct() -> None:
 
         path = "/test"
 
+        def __str__(self) -> str:
+            """Return the full mock URL."""
+            return "http://testserver/test"
+
     class MockRequest:
         """Mock request object."""
 
@@ -95,7 +141,8 @@ async def test_database_error_handler_direct() -> None:
     response = await database_error_handler(MockRequest(), exc)  # type: ignore
 
     assert response.status_code == 500
-    assert response.body == b'{"detail":"Database error occurred","error":"Test error"}'
+    assert b"Test error" not in response.body
+    assert b"A database error occurred" in response.body
 
 
 async def test_validation_error_handler_direct() -> None:
@@ -105,6 +152,10 @@ async def test_validation_error_handler_direct() -> None:
         """Mock URL object."""
 
         path = "/test"
+
+        def __str__(self) -> str:
+            """Return the full mock URL."""
+            return "http://testserver/test"
 
     class MockRequest:
         """Mock request object."""
@@ -124,7 +175,7 @@ async def test_validation_error_handler_direct() -> None:
     response = await validation_error_handler(MockRequest(), exc)  # type: ignore
 
     assert response.status_code == 422
-    assert b"Validation error" in response.body
+    assert b"Request validation failed" in response.body
 
 
 def test_logging_configuration_console() -> None:
