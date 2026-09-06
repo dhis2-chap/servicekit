@@ -30,16 +30,6 @@ class _CapacityLimiter:
         self._active: int = 0
         self._waiters: deque[asyncio.Future[None]] = deque()
 
-    @property
-    def active(self) -> int:
-        """Number of capacity slots currently held."""
-        return self._active
-
-    @property
-    def limit(self) -> int | None:
-        """Current concurrency limit, or None when unlimited."""
-        return self._limit
-
     async def acquire(self) -> None:
         """Wait until a capacity slot is available, then take it."""
         while not self._has_capacity():
