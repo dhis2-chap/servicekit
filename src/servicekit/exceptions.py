@@ -13,6 +13,7 @@ class ErrorType:
     CONFLICT = "urn:servicekit:error:conflict"
     INVALID_ULID = "urn:servicekit:error:invalid-ulid"
     INTERNAL_ERROR = "urn:servicekit:error:internal"
+    DATABASE_ERROR = "urn:servicekit:error:database"
     UNAUTHORIZED = "urn:servicekit:error:unauthorized"
     FORBIDDEN = "urn:servicekit:error:forbidden"
     BAD_REQUEST = "urn:servicekit:error:bad-request"

@@ -4,11 +4,13 @@ import time
 from typing import Any, Awaitable, Callable
 
 from fastapi import Request, Response, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError as PydanticValidationError
 from starlette.middleware.base import BaseHTTPMiddleware
 from ulid import ULID
 
-from servicekit.exceptions import ServicekitException
+from servicekit.exceptions import ErrorType, ServicekitException
 from servicekit.logging import add_request_context, get_logger, reset_request_context
 from servicekit.schemas import ProblemDetail
 
@@ -96,29 +98,72 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
 
 async def database_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Handle database errors and return error response."""
+    """Handle database errors and return RFC 9457 Problem Details without leaking SQL."""
+    from sqlalchemy.exc import IntegrityError
+
+    trace_id = str(ULID())
+
     logger.error(
         "database.error",
         error=str(exc),
+        trace_id=trace_id,
         path=request.url.path,
         exc_info=True,
     )
+
+    if isinstance(exc, IntegrityError):
+        problem = ProblemDetail(
+            type=ErrorType.CONFLICT,
+            title="Conflict",
+            status=status.HTTP_409_CONFLICT,
+            detail="The request conflicts with existing data",
+            instance=str(request.url),
+            trace_id=trace_id,
+        )
+    else:
+        problem = ProblemDetail(
+            type=ErrorType.DATABASE_ERROR,
+            title="Internal Server Error",
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="A database error occurred",
+            instance=str(request.url),
+            trace_id=trace_id,
+        )
+
     return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "Database error occurred", "error": str(exc)},
+        status_code=problem.status,
+        content=problem.model_dump(mode="json", exclude_none=True),
+        media_type="application/problem+json",
     )
 
 
 async def validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Handle validation errors and return error response."""
+    """Handle validation errors and return RFC 9457 Problem Details with structured errors."""
+    trace_id = str(ULID())
+    errors = jsonable_encoder(exc.errors()) if isinstance(exc, PydanticValidationError) else None
+
     logger.warning(
         "validation.error",
         error=str(exc),
+        trace_id=trace_id,
         path=request.url.path,
     )
+
+    extensions: dict[str, Any] = {"errors": errors} if errors is not None else {}
+    problem = ProblemDetail(
+        type=ErrorType.VALIDATION_FAILED,
+        title="Validation Error",
+        status=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail="Request validation failed",
+        instance=str(request.url),
+        trace_id=trace_id,
+        **extensions,
+    )
+
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        content={"detail": "Validation error", "errors": str(exc)},
+        content=problem.model_dump(mode="json", exclude_none=True),
+        media_type="application/problem+json",
     )
 
 
@@ -132,30 +177,42 @@ async def servicekit_exception_handler(request: Request, exc: ServicekitExceptio
         path=request.url.path,
     )
 
+    reserved_names = set(ProblemDetail.model_fields)
+    allowed_extensions = {name: value for name, value in exc.extensions.items() if name not in reserved_names}
+    reserved_extensions = sorted(name for name in exc.extensions if name in reserved_names)
+
+    if reserved_extensions:
+        logger.warning(
+            "problem_detail.reserved_extension_dropped",
+            error_type=exc.type_uri,
+            path=request.url.path,
+            dropped=reserved_extensions,
+        )
+
     problem = ProblemDetail(
         type=exc.type_uri,
         title=exc.title,
         status=exc.status,
         detail=exc.detail,
         instance=exc.instance or str(request.url),
-        **exc.extensions,
+        **allowed_extensions,
     )
 
     return JSONResponse(
         status_code=exc.status,
-        content=problem.model_dump(exclude_none=True),
+        content=problem.model_dump(mode="json", exclude_none=True),
         media_type="application/problem+json",
     )
 
 
 def add_error_handlers(app: Any) -> None:
     """Add error handlers to FastAPI application."""
-    from pydantic import ValidationError
-    from sqlalchemy.exc import SQLAlchemyError
+    from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
     app.add_exception_handler(ServicekitException, servicekit_exception_handler)
     app.add_exception_handler(SQLAlchemyError, database_error_handler)
-    app.add_exception_handler(ValidationError, validation_error_handler)
+    app.add_exception_handler(IntegrityError, database_error_handler)
+    app.add_exception_handler(PydanticValidationError, validation_error_handler)
 
 
 def add_logging_middleware(app: Any) -> None:

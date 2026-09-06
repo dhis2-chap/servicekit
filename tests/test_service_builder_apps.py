@@ -472,3 +472,76 @@ def test_service_builder_with_apps_package_discovery(tmp_path: Path, monkeypatch
         admin_response = client.get("/admin/")
         assert admin_response.status_code == 200
         assert b"Bundled Admin" in admin_response.content
+
+
+@pytest.fixture
+def custom_entry_app_directory(tmp_path: Path) -> Path:
+    """Create an app directory whose manifest entry is not index.html."""
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    (reports_dir / "manifest.json").write_text(
+        json.dumps({"name": "Reports", "version": "1.0.0", "prefix": "/reports", "entry": "home.html"})
+    )
+    (reports_dir / "home.html").write_text("<html><body>Reports Home</body></html>")
+    (reports_dir / "assets").mkdir()
+    (reports_dir / "assets" / "app.js").write_text("console.log('reports');")
+    return reports_dir
+
+
+def test_custom_entry_served_at_mount_root(custom_entry_app_directory: Path):
+    """Test that a manifest entry other than index.html is served at the mount root."""
+    app = (
+        BaseServiceBuilder(info=ServiceInfo(id="test-service", display_name="Test Service"))
+        .with_app(str(custom_entry_app_directory))
+        .build()
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/reports/")
+        assert response.status_code == 200
+        assert b"Reports Home" in response.content
+
+
+def test_custom_entry_served_without_trailing_slash(custom_entry_app_directory: Path):
+    """Test that the redirect from the bare prefix also lands on the custom entry."""
+    app = (
+        BaseServiceBuilder(info=ServiceInfo(id="test-service", display_name="Test Service"))
+        .with_app(str(custom_entry_app_directory))
+        .build()
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/reports", follow_redirects=True)
+        assert response.status_code == 200
+        assert b"Reports Home" in response.content
+
+
+def test_custom_entry_app_serves_nested_assets(custom_entry_app_directory: Path):
+    """Test that nested asset paths are unaffected by the custom entry."""
+    app = (
+        BaseServiceBuilder(info=ServiceInfo(id="test-service", display_name="Test Service"))
+        .with_app(str(custom_entry_app_directory))
+        .build()
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/reports/assets/app.js")
+        assert response.status_code == 200
+        assert b"console.log" in response.content
+
+        missing = client.get("/reports/missing.html")
+        assert missing.status_code == 404
+
+
+def test_default_entry_app_unchanged(app_directory: Path):
+    """Test that apps using the default index.html entry still serve at the mount root."""
+    app = (
+        BaseServiceBuilder(info=ServiceInfo(id="test-service", display_name="Test Service"))
+        .with_app(str(app_directory / "dashboard"))
+        .build()
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/dashboard/")
+        assert response.status_code == 200
+        assert b"Dashboard App" in response.content

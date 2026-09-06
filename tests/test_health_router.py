@@ -61,10 +61,10 @@ def test_health_check_no_checks(app_no_checks: FastAPI) -> None:
 
 
 def test_health_check_with_checks(app_with_checks: FastAPI) -> None:
-    """Test health check endpoint with custom checks aggregates results."""
+    """Test health check endpoint with custom checks aggregates results and returns 503."""
     client = TestClient(app_with_checks)
     response = client.get("/health/")
-    assert response.status_code == 200
+    assert response.status_code == 503
     data = response.json()
 
     # Overall status should be unhealthy (worst state)
@@ -84,6 +84,38 @@ def test_health_check_with_checks(app_with_checks: FastAPI) -> None:
     # Exception should be caught and reported as unhealthy
     assert checks["exception_check"]["state"] == "unhealthy"
     assert "Check failed" in checks["exception_check"]["message"]
+
+
+def test_health_check_degraded_returns_200() -> None:
+    """Test that a degraded aggregate state still returns 200."""
+
+    async def check_degraded() -> tuple[HealthState, str | None]:
+        return (HealthState.DEGRADED, "Partial outage")
+
+    app = FastAPI()
+    app.include_router(HealthRouter.create(prefix="/health", tags=["Observability"], checks={"cache": check_degraded}))
+
+    client = TestClient(app)
+    response = client.get("/health/")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "degraded"
+
+
+def test_health_check_failing_check_returns_503() -> None:
+    """Test that a check raising an exception yields 503."""
+
+    async def check_raises() -> tuple[HealthState, str | None]:
+        raise RuntimeError("Check failed")
+
+    app = FastAPI()
+    app.include_router(HealthRouter.create(prefix="/health", tags=["Observability"], checks={"db": check_raises}))
+
+    client = TestClient(app)
+    response = client.get("/health/")
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "unhealthy"
 
 
 def test_health_state_enum() -> None:
