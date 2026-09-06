@@ -100,7 +100,9 @@ Servicekit uses the first non-None value in this order:
 - **api_key_file** (`str | None`): Path to file containing keys (one per line). For Docker secrets.
 - **env_var** (`str`): Environment variable name to read keys from. Default: `SERVICEKIT_API_KEYS`.
 - **header_name** (`str`): HTTP header name for API key. Default: `X-API-Key`.
-- **unauthenticated_paths** (`List[str] | None`): Paths that don't require authentication.
+- **unauthenticated_paths** (`List[str] | None`): Exact paths that don't require authentication. Omit the parameter
+  (or pass `None`) to use the defaults: `/`, `/docs`, `/redoc`, `/openapi.json`, `/health`. Pass an explicit list to
+  replace the defaults, or an empty list (`[]`) to require authentication on every path.
 
 ---
 

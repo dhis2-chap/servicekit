@@ -288,7 +288,7 @@ class BaseServiceBuilder:
 
         # Default unauthenticated paths
         default_unauth = {"/docs", "/redoc", "/openapi.json", "/health", "/"}
-        unauth_set = set(unauthenticated_paths) if unauthenticated_paths else default_unauth
+        unauth_set = set(unauthenticated_paths) if unauthenticated_paths is not None else default_unauth
 
         self._auth_options = _AuthOptions(
             api_keys=keys,
