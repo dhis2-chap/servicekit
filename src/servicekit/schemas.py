@@ -162,12 +162,13 @@ class ProblemDetail(BaseModel):
 
 
 class JobStatus(StrEnum):
-    """Status of a scheduled job."""
+    """Status of a scheduled job; `canceling` means cancellation was requested but sync work is still finishing."""
 
     pending = "pending"
     running = "running"
     completed = "completed"
     failed = "failed"
+    canceling = "canceling"
     canceled = "canceled"
 
 
