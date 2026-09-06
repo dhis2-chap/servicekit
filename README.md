@@ -53,7 +53,7 @@ servicekit/
 ├── repository.py     # Repository, BaseRepository
 ├── manager.py        # Manager, BaseManager
 ├── schemas.py        # EntityIn, EntityOut, PaginatedResponse
-├── scheduler.py      # JobScheduler, AIOJobScheduler
+├── scheduler.py      # Scheduler, InMemoryScheduler
 ├── exceptions.py     # Error classes
 ├── logging.py        # Structured logging
 ├── types.py          # ULIDType, JsonSafe
@@ -166,7 +166,8 @@ See `docs/` for comprehensive guides and API reference.
 
 ```bash
 make test      # Run tests
-make lint      # Run linter
+make format    # Format code and apply lint fixes
+make lint      # Check formatting, linting and types
 make coverage  # Test coverage
 ```
 

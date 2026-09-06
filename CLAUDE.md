@@ -19,7 +19,7 @@ These are violated most often, so they come first:
 - Be concise; follow existing style and patterns; prioritize readability.
 - Type annotations required everywhere.
 - Ask before creating branches or PRs.
-- Always run `make lint` and `make test` after changes.
+- Always run `make format`, then `make lint` and `make test` after changes.
 
 ## Documentation
 
