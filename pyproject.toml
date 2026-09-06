@@ -77,6 +77,9 @@ fixable = ["ALL"]
 select = ["E", "W", "F", "I", "D"]
 ignore = ["D203", "D213"]
 
+[tool.ruff.lint.isort]
+known-third-party = ["alembic"]
+
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
