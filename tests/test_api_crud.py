@@ -615,3 +615,33 @@ def test_find_all_documents_pagination_query_parameters(
     assert page_schema["minimum"] == 1
     assert size_schema["minimum"] == 1
     assert size_schema["maximum"] == 100
+
+
+def test_create_documents_conflict_response(
+    crud_client: tuple[TestClient, FakeManager, CrudRouter[ItemIn, ItemOut]],
+) -> None:
+    """The create route documents a 409 Problem Details response."""
+    client, _, _ = crud_client
+
+    schema = client.get("/openapi.json").json()
+    responses = schema["paths"]["/items"]["post"]["responses"]
+
+    assert "409" in responses
+    content = responses["409"]["content"]["application/json"]
+    assert content["schema"]["$ref"].endswith("/ProblemDetail")
+
+
+def test_entity_routes_document_not_found_response(
+    crud_client: tuple[TestClient, FakeManager, CrudRouter[ItemIn, ItemOut]],
+) -> None:
+    """The entity routes document a 404 Problem Details response."""
+    client, _, _ = crud_client
+
+    schema = client.get("/openapi.json").json()
+    operations = schema["paths"]["/items/{entity_id}"]
+
+    for method in ("get", "put", "delete"):
+        responses = operations[method]["responses"]
+        assert "404" in responses, method
+        content = responses["404"]["content"]["application/json"]
+        assert content["schema"]["$ref"].endswith("/ProblemDetail")

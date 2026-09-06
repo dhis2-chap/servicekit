@@ -22,6 +22,7 @@ from .exceptions import (
     ServicekitException,
     UnauthorizedError,
     ValidationError,
+    classify_integrity_error,
 )
 from .logging import add_request_context, clear_request_context, configure_logging, get_logger, reset_request_context
 from .manager import BaseManager, LifecycleHooks, Manager
@@ -76,6 +77,7 @@ __all__ = [
     "NotFoundError",
     "ValidationError",
     "ConflictError",
+    "classify_integrity_error",
     "InvalidULIDError",
     "BadRequestError",
     "UnauthorizedError",

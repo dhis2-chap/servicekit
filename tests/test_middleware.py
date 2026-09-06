@@ -45,6 +45,22 @@ def app_with_handlers() -> FastAPI:
     async def trigger_integrity_error() -> None:
         raise IntegrityError("INSERT INTO t (p) VALUES (?)", ("hunter2",), Exception("duplicate key"))
 
+    @app.get("/integrity-error-foreign-key")
+    async def trigger_foreign_key_error() -> None:
+        raise IntegrityError(
+            "INSERT INTO t (parent_id) VALUES (?)",
+            ("hunter2",),
+            Exception("FOREIGN KEY constraint failed"),
+        )
+
+    @app.get("/integrity-error-unique")
+    async def trigger_unique_error() -> None:
+        raise IntegrityError(
+            "INSERT INTO t (id) VALUES (?)",
+            ("hunter2",),
+            Exception("UNIQUE constraint failed: t.id"),
+        )
+
     @app.get("/validation-error")
     async def trigger_validation_error() -> None:
         raise ValidationError.from_exception_data(
@@ -103,6 +119,42 @@ def test_database_error_handler_maps_integrity_error_to_409(app_with_handlers: F
     assert payload["detail"] == "The request conflicts with existing data"
     assert payload["trace_id"]
     assert "hunter2" not in response.text
+
+
+def test_database_error_handler_classifies_foreign_key_violation(app_with_handlers: FastAPI) -> None:
+    """Test that a foreign key violation is classified without leaking SQL."""
+    client = TestClient(app_with_handlers)
+
+    response = client.get("/integrity-error-foreign-key")
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["constraint"] == "foreign_key"
+    assert payload["detail"] == "The request conflicts with existing data"
+    assert "hunter2" not in response.text
+    assert "INSERT" not in response.text
+
+
+def test_database_error_handler_classifies_unique_violation(app_with_handlers: FastAPI) -> None:
+    """Test that a unique violation is classified without leaking SQL."""
+    client = TestClient(app_with_handlers)
+
+    response = client.get("/integrity-error-unique")
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["constraint"] == "unique"
+    assert "hunter2" not in response.text
+
+
+def test_database_error_handler_omits_unknown_constraint(app_with_handlers: FastAPI) -> None:
+    """Test that an unrecognized integrity error carries no constraint extension."""
+    client = TestClient(app_with_handlers)
+
+    response = client.get("/integrity-error")
+
+    assert response.status_code == 409
+    assert "constraint" not in response.json()
 
 
 def test_validation_error_handler_returns_422(app_with_handlers: FastAPI) -> None:

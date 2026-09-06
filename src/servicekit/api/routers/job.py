@@ -7,12 +7,13 @@ from collections.abc import AsyncGenerator, Callable
 from typing import Annotated, Any
 
 import ulid
-from fastapi import Depends, HTTPException, Query, status
+from fastapi import Depends, Query, status
 from fastapi.responses import Response, StreamingResponse
 from pydantic import TypeAdapter
 
 from servicekit.api.router import Router
 from servicekit.api.sse import SSE_HEADERS, format_sse_model_event
+from servicekit.exceptions import InvalidULIDError, NotFoundError
 from servicekit.scheduler import Scheduler
 from servicekit.schemas import JobRecord, JobStatus
 
@@ -57,23 +58,23 @@ class JobRouter(Router):
             job_id: str,
             scheduler: Scheduler = scheduler_dependency,
         ) -> JobRecord:
+            ulid_id = self._parse_job_id(job_id)
             try:
-                ulid_id = ULID.from_str(job_id)
                 return await scheduler.get_record(ulid_id)
-            except (ValueError, KeyError):
-                raise HTTPException(status_code=404, detail="Job not found")
+            except KeyError as error:
+                raise self._job_not_found(job_id) from error
 
         @self.router.delete("/{job_id}", summary="Cancel and delete job", status_code=status.HTTP_204_NO_CONTENT)
         async def delete_job(
             job_id: str,
             scheduler: Scheduler = scheduler_dependency,
         ) -> Response:
+            ulid_id = self._parse_job_id(job_id)
             try:
-                ulid_id = ULID.from_str(job_id)
                 await scheduler.delete(ulid_id)
-                return Response(status_code=status.HTTP_204_NO_CONTENT)
-            except (ValueError, KeyError):
-                raise HTTPException(status_code=404, detail="Job not found")
+            except KeyError as error:
+                raise self._job_not_found(job_id) from error
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
 
         @self.router.get(
             "/{job_id}/$stream",
@@ -87,16 +88,13 @@ class JobRouter(Router):
         ) -> StreamingResponse:
             """Stream real-time job status updates using Server-Sent Events."""
             # Validate job_id format
-            try:
-                ulid_id = ULID.from_str(job_id)
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid job ID format")
+            ulid_id = self._parse_job_id(job_id)
 
             # Check job exists before starting stream
             try:
                 await scheduler.get_record(ulid_id)
-            except KeyError:
-                raise HTTPException(status_code=404, detail="Job not found")
+            except KeyError as error:
+                raise self._job_not_found(job_id) from error
 
             # SSE event generator
             async def event_stream() -> AsyncGenerator[bytes, None]:
@@ -124,3 +122,17 @@ class JobRouter(Router):
                 media_type="text/event-stream",
                 headers=SSE_HEADERS,
             )
+
+    def _parse_job_id(self, job_id: str) -> ULID:
+        """Parse a job ID as a ULID, raising InvalidULIDError when malformed."""
+        try:
+            return ULID.from_str(job_id)
+        except ValueError as error:
+            raise InvalidULIDError(
+                f"Invalid job ID format: {job_id}",
+                instance=f"{self.router.prefix}/{job_id}",
+            ) from error
+
+    def _job_not_found(self, job_id: str) -> NotFoundError:
+        """Build the not-found error for a missing job."""
+        return NotFoundError(f"Job with id {job_id} not found", instance=f"{self.router.prefix}/{job_id}")

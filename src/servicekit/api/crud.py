@@ -9,7 +9,22 @@ from ulid import ULID
 
 from servicekit.api.router import Router
 from servicekit.manager import Manager
-from servicekit.schemas import PaginatedResponse
+from servicekit.schemas import PaginatedResponse, ProblemDetail
+
+# OpenAPI response documentation shared by CRUD routes
+_CONFLICT_RESPONSES: dict[int | str, dict[str, Any]] = {
+    status.HTTP_409_CONFLICT: {
+        "model": ProblemDetail,
+        "description": "An entity with the supplied id already exists or a database constraint was violated",
+    }
+}
+
+_NOT_FOUND_RESPONSES: dict[int | str, dict[str, Any]] = {
+    status.HTTP_404_NOT_FOUND: {
+        "model": ProblemDetail,
+        "description": "No entity exists with the supplied id",
+    }
+}
 
 # Type alias for manager factory function
 type ManagerFactory[InSchemaT: BaseModel, OutSchemaT: BaseModel] = Callable[..., Manager[InSchemaT, OutSchemaT, ULID]]
@@ -171,7 +186,12 @@ class CrudRouter[InSchemaT: BaseModel, OutSchemaT: BaseModel](Router):
         entity_out_annotation: Any = self.entity_out_type
         router_prefix = self.router.prefix
 
-        @self.router.post("", status_code=status.HTTP_201_CREATED, response_model=entity_out_annotation)
+        @self.router.post(
+            "",
+            status_code=status.HTTP_201_CREATED,
+            response_model=entity_out_annotation,
+            responses=_CONFLICT_RESPONSES,
+        )
         async def create(
             entity_in: InSchemaT,
             request: Request,
@@ -218,7 +238,7 @@ class CrudRouter[InSchemaT: BaseModel, OutSchemaT: BaseModel](Router):
         entity_out_annotation: Any = self.entity_out_type
         router_prefix = self.router.prefix
 
-        @self.router.get("/{entity_id}", response_model=entity_out_annotation)
+        @self.router.get("/{entity_id}", response_model=entity_out_annotation, responses=_NOT_FOUND_RESPONSES)
         async def find_by_id(
             entity_id: str,
             manager: Manager[InSchemaT, OutSchemaT, ULID] = manager_dependency,
@@ -242,7 +262,7 @@ class CrudRouter[InSchemaT: BaseModel, OutSchemaT: BaseModel](Router):
         entity_out_annotation: Any = self.entity_out_type
         router_prefix = self.router.prefix
 
-        @self.router.put("/{entity_id}", response_model=entity_out_annotation)
+        @self.router.put("/{entity_id}", response_model=entity_out_annotation, responses=_NOT_FOUND_RESPONSES)
         async def update(
             entity_id: str,
             entity_in: InSchemaT,
@@ -266,7 +286,7 @@ class CrudRouter[InSchemaT: BaseModel, OutSchemaT: BaseModel](Router):
     def _register_delete_route(self, manager_dependency: Any, manager_annotation: Any) -> None:
         router_prefix = self.router.prefix
 
-        @self.router.delete("/{entity_id}", status_code=status.HTTP_204_NO_CONTENT)
+        @self.router.delete("/{entity_id}", status_code=status.HTTP_204_NO_CONTENT, responses=_NOT_FOUND_RESPONSES)
         async def delete_by_id(
             entity_id: str,
             manager: Manager[InSchemaT, OutSchemaT, ULID] = manager_dependency,

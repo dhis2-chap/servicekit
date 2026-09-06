@@ -9,7 +9,8 @@ import ulid
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from servicekit.api import BaseServiceBuilder, ServiceInfo
+from servicekit.api import BaseServiceBuilder, JobOptions, ServiceInfo
+from servicekit.scheduler import InMemoryScheduler, Scheduler
 
 ULID = ulid.ULID
 
@@ -122,17 +123,24 @@ class TestJobRouter:
 
     @pytest.mark.asyncio
     async def test_get_job_not_found(self, client: AsyncClient):
-        """Test GET /api/v1/jobs/{id} returns 404 for non-existent job."""
+        """Test GET /api/v1/jobs/{id} returns an RFC 9457 404 for a non-existent job."""
         fake_id = ULID()
         response = await client.get(f"/api/v1/jobs/{fake_id}")
         assert response.status_code == 404
-        assert response.json()["detail"] == "Job not found"
+        assert response.headers["content-type"].startswith("application/problem+json")
+        body = response.json()
+        assert body["detail"] == f"Job with id {fake_id} not found"
+        assert body["type"] == "urn:servicekit:error:not-found"
 
     @pytest.mark.asyncio
     async def test_get_job_invalid_ulid(self, client: AsyncClient):
-        """Test GET /api/v1/jobs/{id} returns 404 for invalid ULID."""
+        """Test GET /api/v1/jobs/{id} returns an RFC 9457 400 for an invalid ULID."""
         response = await client.get("/api/v1/jobs/invalid-ulid")
-        assert response.status_code == 404
+        assert response.status_code == 400
+        assert response.headers["content-type"].startswith("application/problem+json")
+        body = response.json()
+        assert body["detail"] == "Invalid job ID format: invalid-ulid"
+        assert body["type"] == "urn:servicekit:error:invalid-ulid"
 
     @pytest.mark.asyncio
     async def test_delete_job(self, client: AsyncClient, app: FastAPI):
@@ -176,11 +184,14 @@ class TestJobRouter:
 
     @pytest.mark.asyncio
     async def test_delete_job_not_found(self, client: AsyncClient):
-        """Test DELETE /api/v1/jobs/{id} returns 404 for non-existent job."""
+        """Test DELETE /api/v1/jobs/{id} returns an RFC 9457 404 for a non-existent job."""
         fake_id = ULID()
         response = await client.delete(f"/api/v1/jobs/{fake_id}")
         assert response.status_code == 404
-        assert response.json()["detail"] == "Job not found"
+        assert response.headers["content-type"].startswith("application/problem+json")
+        body = response.json()
+        assert body["detail"] == f"Job with id {fake_id} not found"
+        assert body["type"] == "urn:servicekit:error:not-found"
 
     @pytest.mark.asyncio
     async def test_failed_job_has_error(self, client: AsyncClient, app: FastAPI):
@@ -324,17 +335,22 @@ class TestJobRouter:
 
     @pytest.mark.asyncio
     async def test_stream_job_status_not_found(self, client: AsyncClient):
-        """Test SSE streaming for non-existent job returns 404."""
+        """Test SSE streaming for non-existent job returns an RFC 9457 404."""
         fake_id = ULID()
         response = await client.get(f"/api/v1/jobs/{fake_id}/$stream")
         assert response.status_code == 404
+        assert response.headers["content-type"].startswith("application/problem+json")
+        assert response.json()["detail"] == f"Job with id {fake_id} not found"
 
     @pytest.mark.asyncio
     async def test_stream_job_status_invalid_ulid(self, client: AsyncClient):
-        """Test SSE streaming with invalid ULID returns 400."""
+        """Test SSE streaming with invalid ULID returns an RFC 9457 400."""
         response = await client.get("/api/v1/jobs/invalid-ulid/$stream")
         assert response.status_code == 400
-        assert response.json()["detail"] == "Invalid job ID format"
+        assert response.headers["content-type"].startswith("application/problem+json")
+        body = response.json()
+        assert body["detail"] == "Invalid job ID format: invalid-ulid"
+        assert body["type"] == "urn:servicekit:error:invalid-ulid"
 
     @pytest.mark.asyncio
     async def test_stream_job_status_custom_poll_interval(self, client: AsyncClient, app: FastAPI):
@@ -508,6 +524,28 @@ class TestJobRouterIntegration:
                 assert response.json() == []
 
     @pytest.mark.asyncio
+    async def test_create_scheduler_hook_receives_public_job_options(self) -> None:
+        """Test that _create_scheduler can be overridden using the public JobOptions type."""
+        received: list[JobOptions] = []
+
+        class CustomSchedulerBuilder(BaseServiceBuilder):
+            """Builder that records the job options passed to the scheduler hook."""
+
+            def _create_scheduler(self, job_options: JobOptions) -> Scheduler:
+                """Create the scheduler while recording its configuration."""
+                received.append(job_options)
+                return InMemoryScheduler(max_concurrency=job_options.max_concurrency)
+
+        info = ServiceInfo(id="test-service", display_name="Test Service")
+        app = CustomSchedulerBuilder(info=info).with_jobs(max_concurrency=3).build()
+
+        async with app.router.lifespan_context(app):
+            assert app.state.scheduler.max_concurrency == 3
+
+        assert len(received) == 1
+        assert received[0].max_concurrency == 3
+
+    @pytest.mark.asyncio
     async def test_service_builder_with_max_concurrency(self) -> None:
         """Test BaseServiceBuilder.with_jobs(max_concurrency=N) configures scheduler."""
         info = ServiceInfo(id="test-service", display_name="Test Service")
@@ -540,3 +578,10 @@ class TestJobRouterIntegration:
             # Check tags at operation level
             jobs_list_tags = paths["/api/v1/jobs"]["get"]["tags"]
             assert "Jobs" in jobs_list_tags
+
+
+def test_job_options_alias_is_backwards_compatible() -> None:
+    """Test that the previously private _JobOptions name still resolves to JobOptions."""
+    from servicekit.api.service_builder import _JobOptions
+
+    assert _JobOptions is JobOptions

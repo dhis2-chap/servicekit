@@ -54,13 +54,17 @@ class _SystemOptions:
 
 
 @dataclass(frozen=True)
-class _JobOptions:
+class JobOptions:
     """Configuration for job scheduler endpoints."""
 
     prefix: str
     tags: list[str]
     max_concurrency: int | None
     shutdown_timeout: float
+
+
+# Backwards-compatible alias for the previously private name
+_JobOptions = JobOptions
 
 
 @dataclass(frozen=True)
@@ -153,7 +157,7 @@ class BaseServiceBuilder:
         self._include_logging = include_logging
         self._health_options: _HealthOptions | None = None
         self._system_options: _SystemOptions | None = None
-        self._job_options: _JobOptions | None = None
+        self._job_options: JobOptions | None = None
         self._auth_options: _AuthOptions | None = None
         self._monitoring_options: _MonitoringOptions | None = None
         self._registration_options: _RegistrationOptions | None = None
@@ -247,7 +251,7 @@ class BaseServiceBuilder:
         shutdown_timeout: float = 10.0,
     ) -> Self:
         """Add job scheduler endpoints."""
-        self._job_options = _JobOptions(
+        self._job_options = JobOptions(
             prefix=prefix,
             tags=list(tags) if tags is not None else ["Jobs"],
             max_concurrency=max_concurrency,
@@ -776,7 +780,7 @@ class BaseServiceBuilder:
 
         return lifespan
 
-    def _create_scheduler(self, job_options: _JobOptions) -> Scheduler:
+    def _create_scheduler(self, job_options: JobOptions) -> Scheduler:
         """Create the scheduler used by the application (override in subclasses)."""
         from servicekit.scheduler import InMemoryScheduler
 

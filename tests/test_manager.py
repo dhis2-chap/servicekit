@@ -1,10 +1,21 @@
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 from ulid import ULID
 
 from servicekit import SqliteDatabaseBuilder
 from servicekit.exceptions import ConflictError
 
-from .conftest import DemoData, TestEntity, TestEntityIn, TestEntityManager, TestEntityOut, TestEntityRepository
+from .conftest import (
+    DemoData,
+    TestChildEntityIn,
+    TestChildEntityManager,
+    TestChildEntityRepository,
+    TestEntity,
+    TestEntityIn,
+    TestEntityManager,
+    TestEntityOut,
+    TestEntityRepository,
+)
 
 
 class TestBaseManager:
@@ -473,14 +484,22 @@ class TestBaseManager:
         await db.dispose()
 
     async def test_create_maps_integrity_error_to_conflict(self) -> None:
-        """Test that a concurrent duplicate insert surfaces as ConflictError."""
+        """Test that a concurrent duplicate insert is still reported as a duplicate id."""
 
         class BlindRepository(TestEntityRepository):
-            """Repository that never reports an existing entity."""
+            """Repository that misses the entity on the pre-check, as a concurrent insert would."""
+
+            def __init__(self, session: AsyncSession) -> None:
+                """Track how many existence checks have been made."""
+                super().__init__(session)
+                self.exists_calls = 0
 
             async def exists_by_id(self, id: ULID) -> bool:
-                """Pretend no entity exists to reach the persistence boundary."""
-                return False
+                """Report the entity as missing on the pre-check only."""
+                self.exists_calls += 1
+                if self.exists_calls == 1:
+                    return False
+                return await super().exists_by_id(id)
 
         db = SqliteDatabaseBuilder.in_memory().build()
         await db.init()
@@ -494,10 +513,58 @@ class TestBaseManager:
         async with db.session() as session:
             manager = TestEntityManager(BlindRepository(session))
 
-            with pytest.raises(ConflictError):
+            with pytest.raises(ConflictError) as exc_info:
                 await manager.create(TestEntityIn(id=explicit_id, name="second", data=DemoData(x=2, y=2, z=2, tags=[])))
 
+            assert exc_info.value.detail == f"Entity with id {explicit_id} already exists"
             assert await manager.count() == 1
+
+        await db.dispose()
+
+    async def test_create_maps_foreign_key_violation_to_generic_conflict(self) -> None:
+        """Test that a foreign key violation is not reported as a duplicate id."""
+        db = SqliteDatabaseBuilder.in_memory().build()
+        await db.init()
+
+        async with db.session() as session:
+            manager = TestChildEntityManager(TestChildEntityRepository(session))
+
+            with pytest.raises(ConflictError) as exc_info:
+                await manager.create(TestChildEntityIn(name="orphan", parent_id=str(ULID())))
+
+            error = exc_info.value
+            assert error.detail == "Entity violates a database constraint"
+            assert "None" not in error.detail
+            assert "already exists" not in error.detail
+            assert "INSERT" not in error.detail
+            assert error.extensions == {"constraint": "foreign_key"}
+
+        await db.dispose()
+
+    async def test_create_without_id_maps_constraint_violation_generically(self) -> None:
+        """Test that an integrity error on a generated id never mentions an id of None."""
+
+        class NullNameRepository(TestEntityRepository):
+            """Repository that blanks a required column to force a NOT NULL violation."""
+
+            async def save(self, entity: TestEntity) -> TestEntity:
+                """Clear the required name column before flushing."""
+                entity.name = None  # type: ignore[assignment]
+                return await super().save(entity)
+
+        db = SqliteDatabaseBuilder.in_memory().build()
+        await db.init()
+
+        async with db.session() as session:
+            manager = TestEntityManager(NullNameRepository(session))
+
+            with pytest.raises(ConflictError) as exc_info:
+                await manager.create(TestEntityIn(name="anonymous", data=DemoData(x=1, y=1, z=1, tags=[])))
+
+            error = exc_info.value
+            assert error.detail == "Entity violates a database constraint"
+            assert "None" not in error.detail
+            assert error.extensions == {"constraint": "not_null"}
 
         await db.dispose()
 
