@@ -90,7 +90,7 @@ The `.with_registration()` method accepts these parameters:
     port_env="SERVICEKIT_PORT",
     max_retries=5,                      # Number of registration attempts
     retry_delay=2.0,                    # Seconds between retries
-    fail_on_error=False,                # Abort startup on failure
+    fail_on_error=False,                # True: report unhealthy and SIGTERM on failure
     timeout=10.0,                       # HTTP request timeout
     enable_keepalive=True,              # Enable periodic ping to keep service alive
     keepalive_interval=10.0,            # Seconds between keepalive pings
@@ -132,7 +132,7 @@ ServiceInfo(id="my_service", display_name="My Service")  # underscore
 - **port_env** (`str`): Environment variable name for port override. Default: `SERVICEKIT_PORT`.
 - **max_retries** (`int`): Maximum number of registration attempts. Default: 5.
 - **retry_delay** (`float`): Delay in seconds between retry attempts. Default: 2.0.
-- **fail_on_error** (`bool`): If True, raise exception and abort startup on registration failure. If False, log warning and continue. Default: False.
+- **fail_on_error** (`bool`): If True, a registration failure (including a readiness timeout) marks the service unhealthy and raises `SIGTERM`, so the process shuts down gracefully through the normal lifespan cleanup. If False, log a warning and keep serving. Default: False.
 - **timeout** (`float`): HTTP request timeout in seconds. Default: 10.0.
 - **enable_keepalive** (`bool`): Enable periodic pings to keep service registered. Default: True.
 - **keepalive_interval** (`float`): Seconds between keepalive pings. Default: 10.0.
@@ -268,7 +268,7 @@ Priority order:
 1. **Direct Parameter**: `host="my-service"` in `.with_registration()`
 2. **Auto-Detection**: `socket.gethostname()` (returns Docker container name or hostname)
 3. **Environment Variable**: Value of `SERVICEKIT_HOST` (or custom env var)
-4. **Error**: Raises exception if `fail_on_error=True`, otherwise logs warning
+4. **Error**: Triggers a graceful shutdown if `fail_on_error=True`, otherwise logs a warning
 
 **Docker Behavior**: In Docker Compose, `socket.gethostname()` returns the service name or container ID, making auto-detection work seamlessly.
 
@@ -354,7 +354,7 @@ For critical services that must register:
 app = (
     BaseServiceBuilder(info=ServiceInfo(id="critical-service", display_name="Critical Service"))
     .with_registration(
-        fail_on_error=True,  # Abort startup if registration fails
+        fail_on_error=True,  # Shut down gracefully if registration fails
         max_retries=10,
         retry_delay=1.0,
     )
@@ -548,17 +548,30 @@ Example timeline:
 
 ### Fail on Error
 
-**Default (fail_on_error=False)**: Service starts even if registration fails
+Registration is deferred: it runs in a background task once the app is serving, so
+startup itself never blocks on the orchestrator and never raises.
+
+**Default (fail_on_error=False)**: Service keeps serving even if registration fails
 
 ```python
 .with_registration(fail_on_error=False)  # Log warning, continue
 ```
 
-**Fail-Fast (fail_on_error=True)**: Service aborts startup if registration fails
+**Fail-Fast (fail_on_error=True)**: The process must not keep serving unregistered
 
 ```python
-.with_registration(fail_on_error=True)  # Raise exception, abort
+.with_registration(fail_on_error=True)  # Report unhealthy, then SIGTERM
 ```
+
+With `fail_on_error=True`, a registration failure or a readiness timeout:
+
+1. Sets `app.state.registration_failed = True`, so the built-in `registration`
+   health check reports `unhealthy` and `/health` degrades accordingly.
+2. Logs `registration.fatal` at critical level.
+3. Raises `SIGTERM` in the process, so the server performs its normal graceful
+   shutdown: keepalive stops, jobs drain, shutdown hooks run, the database is disposed.
+
+No exception is raised out of startup, and no cleanup step is skipped.
 
 **When to use fail-fast**:
 - Critical services that require orchestrator awareness
@@ -734,7 +747,7 @@ Adjust retries for production reliability:
     max_retries=10,       # More attempts
     retry_delay=1.0,      # Faster retries
     timeout=30.0,         # Longer timeout
-    fail_on_error=True,   # Fail fast in production
+    fail_on_error=True,   # Shut down gracefully in production
 )
 ```
 

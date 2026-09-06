@@ -3,20 +3,25 @@
 import asyncio
 import os
 import socket
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, SerializeAsAny
 
 from servicekit.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Global references for keepalive management
-_keepalive_task: asyncio.Task | None = None
-_service_id: str | None = None
-_ping_url: str | None = None
-_service_key: str | None = None
+
+@dataclass
+class KeepaliveHandle:
+    """Handle for a running keepalive task, owned by the caller that started it."""
+
+    task: asyncio.Task[None]
+    service_id: str
+    ping_url: str
+    service_key: str | None
 
 
 class RegistrationConfig(BaseModel):
@@ -27,7 +32,7 @@ class RegistrationConfig(BaseModel):
     orchestrator_url: str | None = None
     host: str | None = None
     port: int | None = None
-    info: BaseModel
+    info: SerializeAsAny[BaseModel]
     orchestrator_url_env: str = "SERVICEKIT_ORCHESTRATOR_URL"
     host_env: str = "SERVICEKIT_HOST"
     port_env: str = "SERVICEKIT_PORT"
@@ -65,10 +70,6 @@ async def register_service(
     """Register service with orchestrator for service discovery and return registration info."""
     # Resolve service key for authentication
     resolved_service_key = _resolve_service_key(service_key, service_key_env)
-
-    # Store globally for keepalive
-    global _service_key
-    _service_key = resolved_service_key
 
     # Resolve orchestrator URL
     resolved_orchestrator_url = orchestrator_url or os.getenv(orchestrator_url_env)
@@ -187,11 +188,6 @@ async def register_service(
                     "status_code": response.status_code,
                 }
 
-                # Store global references for keepalive
-                global _service_id, _ping_url
-                _service_id = service_id
-                _ping_url = response_data.get("ping_url")
-
                 logger.info("registration.success", **log_context)
 
                 # Return registration info for keepalive setup
@@ -200,7 +196,7 @@ async def register_service(
                     "service_url": service_url,
                     "orchestrator_url": resolved_orchestrator_url,
                     "ttl_seconds": response_data.get("ttl_seconds"),
-                    "ping_url": _ping_url,
+                    "ping_url": response_data.get("ping_url"),
                 }
 
         except Exception as e:
@@ -243,6 +239,7 @@ async def _keepalive_loop(
     interval: float,
     timeout: float,
     service_key: str | None,
+    service_id: str,
     registration_config: RegistrationConfig | None = None,
     re_register_grace_period: float = 30.0,
 ) -> None:
@@ -265,20 +262,20 @@ async def _keepalive_loop(
                 response_data = response.json()
                 logger.debug(
                     "keepalive.ping_success",
-                    service_id=_service_id,
+                    service_id=service_id,
                     last_ping_at=response_data.get("last_ping_at"),
                     expires_at=response_data.get("expires_at"),
                 )
 
         except asyncio.CancelledError:
-            logger.info("keepalive.cancelled", service_id=_service_id)
+            logger.info("keepalive.cancelled", service_id=service_id)
             raise
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404 and registration_config is not None:
                 logger.warning(
                     "keepalive.service_not_found",
-                    service_id=_service_id,
+                    service_id=service_id,
                     ping_url=ping_url,
                     grace_period=re_register_grace_period,
                 )
@@ -288,35 +285,41 @@ async def _keepalive_loop(
 
                 # Attempt re-registration with original parameters
                 try:
-                    result = await register_service(**registration_config.model_dump())
+                    result = await register_service(
+                        **registration_config.model_dump(exclude={"info"}),
+                        info=registration_config.info,
+                    )
                     if result and result.get("ping_url"):
                         ping_url = result["ping_url"]
                         # Rebuild headers in case service_key changed
+                        resolved_service_key = _resolve_service_key(
+                            registration_config.service_key, registration_config.service_key_env
+                        )
                         headers = {}
-                        if _service_key:
-                            headers["X-Service-Key"] = _service_key
+                        if resolved_service_key:
+                            headers["X-Service-Key"] = resolved_service_key
                         logger.info(
                             "keepalive.re_registered",
-                            service_id=_service_id,
+                            service_id=service_id,
                             new_ping_url=ping_url,
                         )
                     else:
                         logger.warning(
                             "keepalive.re_registration_failed",
-                            service_id=_service_id,
+                            service_id=service_id,
                             reason="register_service returned None",
                         )
                 except Exception as re_reg_error:
                     logger.warning(
                         "keepalive.re_registration_error",
-                        service_id=_service_id,
+                        service_id=service_id,
                         error=str(re_reg_error),
                         error_type=type(re_reg_error).__name__,
                     )
             else:
                 logger.warning(
                     "keepalive.ping_failed",
-                    service_id=_service_id,
+                    service_id=service_id,
                     ping_url=ping_url,
                     error=str(e),
                     error_type=type(e).__name__,
@@ -325,7 +328,7 @@ async def _keepalive_loop(
         except Exception as e:
             logger.warning(
                 "keepalive.ping_failed",
-                service_id=_service_id,
+                service_id=service_id,
                 ping_url=ping_url,
                 error=str(e),
                 error_type=type(e).__name__,
@@ -335,48 +338,42 @@ async def _keepalive_loop(
 async def start_keepalive(
     *,
     ping_url: str,
+    service_id: str,
     interval: float = 10.0,
     timeout: float = 10.0,
     service_key: str | None = None,
     service_key_env: str = "SERVICEKIT_REGISTRATION_KEY",
     registration_config: RegistrationConfig | None = None,
     re_register_grace_period: float = 30.0,
-) -> None:
-    """Start background keepalive task to ping orchestrator."""
-    global _keepalive_task
+) -> KeepaliveHandle:
+    """Start a background keepalive task and return its handle."""
+    resolved_service_key = _resolve_service_key(service_key, service_key_env)
 
-    if _keepalive_task:
-        logger.warning("keepalive.already_running")
-        return
-
-    # Resolve service key (use global from registration if not provided)
-    resolved_service_key = _resolve_service_key(service_key, service_key_env) or _service_key
-
-    _keepalive_task = asyncio.create_task(
+    task = asyncio.create_task(
         _keepalive_loop(
             ping_url,
             interval,
             timeout,
             resolved_service_key,
+            service_id,
             registration_config=registration_config,
             re_register_grace_period=re_register_grace_period,
-        )
+        ),
+        name=f"servicekit-keepalive-{service_id}",
     )
-    logger.info("keepalive.task_started", ping_url=ping_url, interval_seconds=interval)
+    logger.info("keepalive.task_started", ping_url=ping_url, interval_seconds=interval, service_id=service_id)
+
+    return KeepaliveHandle(task=task, service_id=service_id, ping_url=ping_url, service_key=resolved_service_key)
 
 
-async def stop_keepalive() -> None:
-    """Stop the background keepalive task."""
-    global _keepalive_task
-
-    if _keepalive_task:
-        _keepalive_task.cancel()
-        try:
-            await _keepalive_task
-        except asyncio.CancelledError:
-            pass
-        _keepalive_task = None
-        logger.info("keepalive.task_stopped", service_id=_service_id)
+async def stop_keepalive(handle: KeepaliveHandle) -> None:
+    """Stop the keepalive task owned by the given handle."""
+    handle.task.cancel()
+    try:
+        await handle.task
+    except asyncio.CancelledError:
+        pass
+    logger.info("keepalive.task_stopped", service_id=handle.service_id)
 
 
 async def deregister_service(
@@ -394,8 +391,8 @@ async def deregister_service(
     base_url = orchestrator_url.replace("/$register", "")
     deregister_url = f"{base_url}/{service_id}"
 
-    # Resolve service key (use global from registration if not provided)
-    resolved_service_key = _resolve_service_key(service_key, service_key_env) or _service_key
+    # Resolve service key from parameter or environment
+    resolved_service_key = _resolve_service_key(service_key, service_key_env)
 
     # Build headers with optional service key
     headers: dict[str, str] = {}

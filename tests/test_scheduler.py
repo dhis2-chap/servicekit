@@ -332,3 +332,70 @@ class TestInMemoryScheduler:
         # The error happens during execution, not during add_job
         with pytest.raises(TypeError, match="Args/kwargs not supported"):
             await scheduler.wait(job_id)
+
+
+class TestSchedulerShutdown:
+    """Tests for scheduler shutdown and draining."""
+
+    @pytest.mark.asyncio
+    async def test_shutdown_waits_for_running_jobs(self) -> None:
+        """Test shutdown lets a short job finish within the timeout."""
+        scheduler = InMemoryScheduler()
+
+        async def quick() -> str:
+            await asyncio.sleep(0.01)
+            return "done"
+
+        job_id = await scheduler.add_job(quick)
+        await scheduler.shutdown(timeout=5.0)
+
+        record = await scheduler.get_record(job_id)
+        assert record.status == JobStatus.completed
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cancels_long_running_jobs(self) -> None:
+        """Test shutdown cancels jobs that outlast the timeout."""
+        scheduler = InMemoryScheduler()
+
+        async def slow() -> None:
+            await asyncio.sleep(60)
+
+        job_id = await scheduler.add_job(slow)
+        await scheduler.shutdown(timeout=0.01)
+
+        record = await scheduler.get_record(job_id)
+        assert record.status == JobStatus.canceled
+
+    @pytest.mark.asyncio
+    async def test_shutdown_zero_timeout_cancels_immediately(self) -> None:
+        """Test shutdown with a zero timeout cancels without waiting."""
+        scheduler = InMemoryScheduler()
+
+        async def slow() -> None:
+            await asyncio.sleep(60)
+
+        job_id = await scheduler.add_job(slow)
+        await asyncio.sleep(0.01)
+        await scheduler.shutdown(timeout=0)
+
+        record = await scheduler.get_record(job_id)
+        assert record.status == JobStatus.canceled
+
+    @pytest.mark.asyncio
+    async def test_add_job_after_shutdown_raises(self) -> None:
+        """Test add_job is rejected once the scheduler is shut down."""
+        scheduler = InMemoryScheduler()
+        await scheduler.shutdown()
+
+        async def noop() -> None:
+            return None
+
+        with pytest.raises(RuntimeError, match="Scheduler is shut down"):
+            await scheduler.add_job(noop)
+
+    @pytest.mark.asyncio
+    async def test_shutdown_is_idempotent(self) -> None:
+        """Test shutdown can be called twice without error."""
+        scheduler = InMemoryScheduler()
+        await scheduler.shutdown()
+        await scheduler.shutdown(timeout=0.01)

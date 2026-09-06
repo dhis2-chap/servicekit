@@ -45,9 +45,9 @@ def test_setup_monitoring_multiple_calls_idempotent():
     reader1 = setup_monitoring(app1)
     assert isinstance(reader1, PrometheusMetricReader)
 
-    # Second call with different app should not raise
+    # Second call with a different app returns the same attached reader
     reader2 = setup_monitoring(app2)
-    assert isinstance(reader2, PrometheusMetricReader)
+    assert reader2 is reader1
 
 
 def test_setup_monitoring_handles_process_collector_already_registered():

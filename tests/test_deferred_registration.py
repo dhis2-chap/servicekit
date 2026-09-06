@@ -315,7 +315,7 @@ async def test_register_and_start_keepalive_success():
         new_callable=AsyncMock,
         return_value=reg_info,
     ):
-        result = await _register_and_start_keepalive(options, info)
+        result = await _register_and_start_keepalive(options, info, FastAPI())
 
     assert result == reg_info
 
@@ -361,7 +361,7 @@ async def test_register_and_start_keepalive_with_keepalive():
             new_callable=AsyncMock,
         ) as mock_keepalive,
     ):
-        result = await _register_and_start_keepalive(options, info)
+        result = await _register_and_start_keepalive(options, info, FastAPI())
 
     assert result == reg_info
     mock_keepalive.assert_called_once()
@@ -378,7 +378,7 @@ async def test_register_and_start_keepalive_failure():
         new_callable=AsyncMock,
         return_value=None,
     ):
-        result = await _register_and_start_keepalive(options, info)
+        result = await _register_and_start_keepalive(options, info, FastAPI())
 
     assert result is None
 

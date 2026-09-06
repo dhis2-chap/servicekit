@@ -77,10 +77,8 @@ def get_user_manager(session: AsyncSession = Depends(get_session)) -> UserManage
 
 async def seed_users(app: FastAPI) -> None:
     """Seed example users on startup with stable ULIDs for testing."""
-    from servicekit.api.dependencies import get_database
-
-    db = get_database()
-    async with db.session() as session:
+    database = app.state.database
+    async with database.session() as session:
         repository = UserRepository(session)
         manager = UserManager(repository)
 

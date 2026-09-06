@@ -78,23 +78,40 @@ data: {"status":"healthy"}
 
 **Note**: Stream continues indefinitely until client disconnects. Use Ctrl+C to stop.
 
+## Built-in Health Checks
+
+`with_health()` registers a `database` check by default (disable it with
+`include_database_check=False`). When `.with_registration(...)` is configured, a
+`registration` check is added as well: it reports `unhealthy` once registration has
+failed fatally under `fail_on_error=True`.
+
 ## Custom Health Checks
 
 Add custom health checks to monitor specific subsystems:
 
 ```python
-from servicekit.api import BaseServiceBuilder, ServiceInfo
-from servicekit.api.routers.health import HealthState
+from sqlalchemy import text
 
-async def check_database() -> tuple[HealthState, str | None]:
-    """Check database connectivity."""
-    try:
-        # Test database connection
-        async with get_session() as session:
-            await session.execute("SELECT 1")
-        return (HealthState.HEALTHY, None)
-    except Exception as e:
-        return (HealthState.UNHEALTHY, f"Database error: {str(e)}")
+from servicekit import Database, SqliteDatabaseBuilder
+from servicekit.api import BaseServiceBuilder, ServiceInfo
+from servicekit.api.routers.health import HealthCheck, HealthState
+
+database = SqliteDatabaseBuilder.from_file("service.db").build()
+
+def make_database_check(database: Database) -> HealthCheck:
+    """Build a connectivity check bound to one database instance."""
+
+    # Health checks take no arguments, so capture the database in a closure
+    # instead of resolving it from a request.
+    async def check_database() -> tuple[HealthState, str | None]:
+        try:
+            async with database.session() as session:
+                await session.execute(text("SELECT 1"))
+            return (HealthState.HEALTHY, None)
+        except Exception as e:
+            return (HealthState.UNHEALTHY, f"Database error: {str(e)}")
+
+    return check_database
 
 async def check_redis() -> tuple[HealthState, str | None]:
     """Check Redis connectivity."""
@@ -107,8 +124,9 @@ async def check_redis() -> tuple[HealthState, str | None]:
 
 app = (
     BaseServiceBuilder(info=ServiceInfo(id="my-service", display_name="My Service"))
+    .with_database(database)
     .with_health(checks={
-        "database": check_database,
+        "database": make_database_check(database),
         "redis": check_redis,
     })
     .build()

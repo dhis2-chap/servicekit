@@ -70,6 +70,11 @@ class Scheduler(BaseModel, ABC):
         """Get the result of a completed job."""
         ...
 
+    @abstractmethod
+    async def shutdown(self, *, timeout: float | None = None) -> None:
+        """Stop accepting new jobs, drain running jobs up to timeout, then cancel the rest."""
+        ...
+
 
 class InMemoryScheduler(Scheduler):
     """In-memory asyncio scheduler. Sync callables run in thread pool, concurrency controlled via semaphore."""
@@ -82,10 +87,12 @@ class InMemoryScheduler(Scheduler):
     _tasks: dict[ULID, asyncio.Task[Any]] = PrivateAttr(default_factory=dict)
     _lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
     _sema: asyncio.Semaphore | None = PrivateAttr(default=None)
+    _closed: bool = PrivateAttr(default=False)
 
     def __init__(self, **data: Any):
         """Initialize scheduler with optional concurrency limit."""
         super().__init__(**data)
+        self._closed = False
         if self.max_concurrency and self.max_concurrency > 0:
             self._sema = asyncio.Semaphore(self.max_concurrency)
 
@@ -106,6 +113,9 @@ class InMemoryScheduler(Scheduler):
         **kwargs: Any,
     ) -> ULID:
         """Add a job to the scheduler and return its ID."""
+        if self._closed:
+            raise RuntimeError("Scheduler is shut down")
+
         now = datetime.now(timezone.utc)
         jid = ULID()
 
@@ -300,3 +310,24 @@ class InMemoryScheduler(Scheduler):
             self._records.pop(job_id, None)
             self._tasks.pop(job_id, None)
             self._results.pop(job_id, None)
+
+    async def shutdown(self, *, timeout: float | None = None) -> None:
+        """Stop accepting new jobs, drain running jobs up to timeout, then cancel the rest."""
+        self._closed = True
+
+        async with self._lock:
+            pending = [task for task in self._tasks.values() if not task.done()]
+
+        if not pending:
+            return
+
+        if timeout is None or timeout > 0:
+            _, still_running = await asyncio.wait(pending, timeout=timeout)
+        else:
+            still_running = set(pending)
+
+        for task in still_running:
+            task.cancel()
+
+        if still_running:
+            await asyncio.gather(*still_running, return_exceptions=True)
