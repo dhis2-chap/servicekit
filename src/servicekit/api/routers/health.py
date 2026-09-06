@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from enum import StrEnum
+from typing import Annotated
 
-from fastapi import Response, status
+from fastapi import Query, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -104,7 +105,7 @@ class HealthRouter(Router):
             summary="Stream health status updates via SSE",
             description="Real-time Server-Sent Events stream of health status at regular intervals",
         )
-        async def stream_health_status(poll_interval: float = 1.0) -> StreamingResponse:
+        async def stream_health_status(poll_interval: Annotated[float, Query(gt=0, le=60)] = 1.0) -> StreamingResponse:
             """Stream real-time health status updates using Server-Sent Events."""
 
             async def event_stream() -> AsyncGenerator[bytes, None]:

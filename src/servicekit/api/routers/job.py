@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Callable
-from typing import Any
+from typing import Annotated, Any
 
 import ulid
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.responses import Response, StreamingResponse
 from pydantic import TypeAdapter
 
@@ -83,7 +83,7 @@ class JobRouter(Router):
         async def stream_job_status(
             job_id: str,
             scheduler: Scheduler = scheduler_dependency,
-            poll_interval: float = 0.5,
+            poll_interval: Annotated[float, Query(gt=0, le=60)] = 0.5,
         ) -> StreamingResponse:
             """Stream real-time job status updates using Server-Sent Events."""
             # Validate job_id format
