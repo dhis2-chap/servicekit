@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator, Self
 
+from alembic import command
 from alembic.config import Config
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
@@ -17,7 +18,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import ConnectionPoolEntry
 
-from alembic import command
+from servicekit.logging import get_logger
 
 
 def _install_sqlite_connect_pragmas(engine: AsyncEngine) -> None:
@@ -35,6 +36,11 @@ def _install_sqlite_connect_pragmas(engine: AsyncEngine) -> None:
         cur.close()
 
     event.listen(engine.sync_engine, "connect", on_connect)
+
+
+def get_alembic_dir() -> Path:
+    """Return the path to the Alembic migration directory bundled with servicekit."""
+    return Path(__file__).parent / "alembic"
 
 
 class Database:
@@ -75,6 +81,26 @@ class Database:
             bind=self.engine, class_=AsyncSession, expire_on_commit=False
         )
 
+    def _warn_if_default_migrations_lack_domain_tables(self) -> None:
+        """Warn when bundled migrations run for an application that defines its own tables."""
+        from servicekit.models import Base
+
+        if not Base.metadata.tables:
+            return
+
+        logger = get_logger(__name__)
+        logger.warning(
+            "database.default_migrations_no_domain_tables",
+            message=(
+                "Running the migrations bundled with servicekit, which create only the alembic_version table. "
+                "Application tables will not be created. Pass an application-specific alembic_dir to "
+                "with_migrations(), or disable migrations with with_migrations(enabled=False) to create tables "
+                "directly from the ORM metadata."
+            ),
+            table_count=len(Base.metadata.tables),
+            alembic_dir=str(get_alembic_dir()),
+        )
+
     async def init(self) -> None:
         """Initialize database tables using Alembic migrations or direct creation."""
         import asyncio
@@ -91,10 +117,10 @@ class Database:
             alembic_cfg = Config()
 
             # Use custom alembic directory if provided, otherwise use bundled migrations
-            if self.alembic_dir is not None:
-                alembic_cfg.set_main_option("script_location", str(self.alembic_dir))
-            else:
-                alembic_cfg.set_main_option("script_location", str(Path(__file__).parent.parent.parent / "alembic"))
+            script_location = self.alembic_dir if self.alembic_dir is not None else get_alembic_dir()
+            if self.alembic_dir is None:
+                self._warn_if_default_migrations_lack_domain_tables()
+            alembic_cfg.set_main_option("script_location", str(script_location))
 
             alembic_cfg.set_main_option("sqlalchemy.url", self.url)
 
