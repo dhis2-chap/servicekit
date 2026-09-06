@@ -11,9 +11,9 @@ Servicekit provides an async job scheduler for managing long-running tasks with 
 fastapi dev examples/job_scheduler/main.py
 
 # Submit a 30-second computation job and capture job ID
-JOB_ID=$(curl -s -X POST http://localhost:8000/api/v1/slow-compute \
+JOB_ID=$(curl -s -X POST http://localhost:8000/api/v1/compute \
   -H "Content-Type: application/json" \
-  -d '{"steps": 30}' | jq -r '.job_id')
+  -d '{"duration": 30}' | jq -r '.job_id')
 
 echo "Job ID: $JOB_ID"
 ```
@@ -22,7 +22,8 @@ Response:
 ```json
 {
   "job_id": "01JQRS7X...",
-  "message": "Job submitted with 30 steps. Stream real-time status...",
+  "message": "Job submitted. Use polling (GET /api/v1/jobs/01JQRS7X...) or streaming (GET /api/v1/jobs/01JQRS7X.../$stream)",
+  "poll_url": "/api/v1/jobs/01JQRS7X...",
   "stream_url": "/api/v1/jobs/01JQRS7X.../$stream"
 }
 ```
@@ -44,6 +45,27 @@ data: {"id":"01JQRS7X...","status":"completed","finished_at":"2025-10-12T...","a
 ```
 
 **Note:** Use `-N` flag to disable cURL buffering for real-time streaming.
+
+### Fetch the Result
+
+The example exposes a result endpoint alongside the generic job endpoints:
+
+```bash
+curl http://localhost:8000/api/v1/compute/$JOB_ID/result
+```
+
+Response:
+```json
+{
+  "job_id": "01JQRS7X...",
+  "status": "completed",
+  "submitted_at": "2025-10-12T15:30:00Z",
+  "started_at": "2025-10-12T15:30:01Z",
+  "finished_at": "2025-10-12T15:30:31Z",
+  "result": 42,
+  "error": null
+}
+```
 
 ---
 
@@ -209,7 +231,7 @@ curl -N "http://localhost:8000/api/v1/jobs/01JQRS.../\$stream?poll_interval=1.0"
 
 ### POST /api/v1/jobs
 
-**Not exposed directly.** Submit jobs via custom endpoints (e.g., `/api/v1/slow-compute`).
+**Not exposed directly.** Submit jobs via custom endpoints (e.g., `/api/v1/compute`).
 
 ### GET /api/v1/jobs
 
@@ -331,9 +353,9 @@ fastapi dev examples/job_scheduler/main.py
 **Terminal 2: Submit job and stream status**
 ```bash
 # Submit job and capture job ID
-JOB_ID=$(curl -s -X POST http://localhost:8000/api/v1/slow-compute \
+JOB_ID=$(curl -s -X POST http://localhost:8000/api/v1/compute \
   -H "Content-Type: application/json" \
-  -d '{"steps": 30}' | jq -r '.job_id')
+  -d '{"duration": 30}' | jq -r '.job_id')
 
 echo "Job ID: $JOB_ID"
 
@@ -496,9 +518,9 @@ curl -N "http://localhost:8000/api/v1/jobs/01JQRS.../\$stream?poll_interval=1.0"
 
 ```bash
 # 1. Submit job and extract job_id
-JOB_ID=$(curl -s -X POST http://localhost:8000/api/v1/slow-compute \
+JOB_ID=$(curl -s -X POST http://localhost:8000/api/v1/compute \
   -H "Content-Type: application/json" \
-  -d '{"steps": 30}' | jq -r '.job_id')
+  -d '{"duration": 30}' | jq -r '.job_id')
 
 echo "Job ID: $JOB_ID"
 
