@@ -5,6 +5,7 @@ from typing import Any, Awaitable, Callable
 
 from fastapi import Request, Response, status
 from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -141,9 +142,11 @@ async def database_error_handler(request: Request, exc: Exception) -> JSONRespon
 
 
 async def validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Handle validation errors and return RFC 9457 Problem Details with structured errors."""
+    """Handle Pydantic and FastAPI request validation errors as RFC 9457 Problem Details with structured errors."""
     trace_id = str(ULID())
-    errors = jsonable_encoder(exc.errors()) if isinstance(exc, PydanticValidationError) else None
+    errors = (
+        jsonable_encoder(exc.errors()) if isinstance(exc, (PydanticValidationError, RequestValidationError)) else None
+    )
 
     logger.warning(
         "validation.error",
@@ -216,6 +219,7 @@ def add_error_handlers(app: Any) -> None:
     app.add_exception_handler(SQLAlchemyError, database_error_handler)
     app.add_exception_handler(IntegrityError, database_error_handler)
     app.add_exception_handler(PydanticValidationError, validation_error_handler)
+    app.add_exception_handler(RequestValidationError, validation_error_handler)
 
 
 def add_logging_middleware(app: Any) -> None:

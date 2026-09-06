@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
+from typing import Annotated
 
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request, status
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
@@ -73,6 +74,14 @@ def app_with_handlers() -> FastAPI:
                 }
             ],
         )
+
+    @app.post("/validated-body")
+    async def accept_validated_body(payload: SampleModel) -> SampleModel:
+        return payload
+
+    @app.get("/validated-query")
+    async def accept_validated_query(page: Annotated[int, Query(ge=1)]) -> dict[str, int]:
+        return {"page": page}
 
     return app
 
@@ -369,3 +378,31 @@ def test_servicekit_exception_handler_drops_reserved_extensions() -> None:
     payload = response.json()
     assert payload["status"] == 409
     assert payload["entity_id"] == "test-id"
+
+
+def test_request_body_validation_error_is_problem_details(app_with_handlers: FastAPI) -> None:
+    """Test that FastAPI request body validation failures return RFC 9457 Problem Details."""
+    client = TestClient(app_with_handlers)
+
+    response = client.post("/validated-body", json={})
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert response.headers["content-type"].startswith("application/problem+json")
+    payload = response.json()
+    assert payload["detail"] == "Request validation failed"
+    assert payload["status"] == 422
+    assert payload["trace_id"]
+    assert payload["errors"][0]["loc"] == ["body", "name"]
+
+
+def test_query_parameter_validation_error_is_problem_details(app_with_handlers: FastAPI) -> None:
+    """Test that FastAPI query parameter validation failures return RFC 9457 Problem Details."""
+    client = TestClient(app_with_handlers)
+
+    response = client.get("/validated-query", params={"page": 0})
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert response.headers["content-type"].startswith("application/problem+json")
+    payload = response.json()
+    assert payload["errors"][0]["loc"] == ["query", "page"]
+    assert payload["errors"][0]["type"] == "greater_than_equal"
