@@ -61,3 +61,21 @@ jobs:
       uses: codecov/codecov-action@v7
       env:
         CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  docker-examples:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        example: [app_hosting, auth, core_api, job_scheduler, monitoring, registration]
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Build example image
+      run: docker build -f examples/${{ matrix.example }}/Dockerfile .
+
+    - name: Build registration runtime target
+      if: matrix.example == 'registration'
+      run: docker build -f examples/registration/Dockerfile --target runtime .
