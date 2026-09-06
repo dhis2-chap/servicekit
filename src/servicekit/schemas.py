@@ -142,8 +142,9 @@ class ProblemDetail(BaseModel):
     instance: str | None = Field(default=None, description="URI reference identifying the specific occurrence")
     trace_id: str | None = Field(default=None, description="Optional trace ID for debugging")
 
-    model_config = {
-        "json_schema_extra": {
+    model_config = ConfigDict(
+        extra="allow",
+        json_schema_extra={
             "examples": [
                 {
                     "type": "urn:servicekit:error:not-found",
@@ -153,8 +154,8 @@ class ProblemDetail(BaseModel):
                     "instance": "/api/config/01ABC...",
                 }
             ]
-        }
-    }
+        },
+    )
 
 
 # Job schemas

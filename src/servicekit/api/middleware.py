@@ -132,18 +132,30 @@ async def servicekit_exception_handler(request: Request, exc: ServicekitExceptio
         path=request.url.path,
     )
 
+    reserved_names = set(ProblemDetail.model_fields)
+    allowed_extensions = {name: value for name, value in exc.extensions.items() if name not in reserved_names}
+    reserved_extensions = sorted(name for name in exc.extensions if name in reserved_names)
+
+    if reserved_extensions:
+        logger.warning(
+            "problem_detail.reserved_extension_dropped",
+            error_type=exc.type_uri,
+            path=request.url.path,
+            dropped=reserved_extensions,
+        )
+
     problem = ProblemDetail(
         type=exc.type_uri,
         title=exc.title,
         status=exc.status,
         detail=exc.detail,
         instance=exc.instance or str(request.url),
-        **exc.extensions,
+        **allowed_extensions,
     )
 
     return JSONResponse(
         status_code=exc.status,
-        content=problem.model_dump(exclude_none=True),
+        content=problem.model_dump(mode="json", exclude_none=True),
         media_type="application/problem+json",
     )
 

@@ -16,6 +16,7 @@ from servicekit.api.middleware import (
     database_error_handler,
     validation_error_handler,
 )
+from servicekit.exceptions import ConflictError
 from servicekit.logging import configure_logging
 
 
@@ -226,3 +227,42 @@ def test_request_logging_middleware_logs_on_exception() -> None:
 
     # Should return 500 as the exception is unhandled
     assert response.status_code == 500
+
+
+def test_servicekit_exception_handler_preserves_extensions() -> None:
+    """Test that custom exception extensions appear in the Problem Details body."""
+    app = FastAPI()
+    add_error_handlers(app)
+
+    @app.get("/conflict")
+    async def trigger_conflict() -> None:
+        raise ConflictError("dup", entity_id="test-id", meta={"a": 1})
+
+    client = TestClient(app)
+    response = client.get("/conflict")
+
+    assert response.status_code == 409
+    assert response.headers["content-type"].startswith("application/problem+json")
+    payload = response.json()
+    assert payload["entity_id"] == "test-id"
+    assert payload["meta"] == {"a": 1}
+
+
+def test_servicekit_exception_handler_drops_reserved_extensions() -> None:
+    """Test that extensions colliding with Problem Details fields are dropped instead of failing."""
+    app = FastAPI()
+    add_error_handlers(app)
+
+    @app.get("/reserved")
+    async def trigger_reserved() -> None:
+        error = ConflictError("dup", entity_id="test-id")
+        error.extensions["status"] = 999
+        raise error
+
+    client = TestClient(app)
+    response = client.get("/reserved")
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["status"] == 409
+    assert payload["entity_id"] == "test-id"
