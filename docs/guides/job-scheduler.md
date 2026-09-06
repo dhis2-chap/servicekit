@@ -207,6 +207,9 @@ app = (
 
 **Parameters:**
 - `max_concurrency` (`int | None`): Maximum concurrent jobs. `None` = unlimited.
+- `shutdown_timeout` (`float`): Seconds to let running jobs finish during shutdown before
+  they are canceled. Default: 10.0. The scheduler is always drained before the database is
+  disposed, and it rejects new jobs once shut down.
 
 ### SSE Poll Interval
 

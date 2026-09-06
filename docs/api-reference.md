@@ -141,6 +141,14 @@ Error handling and logging middleware.
 
 FastAPI dependency injection functions.
 
+Dependencies are **per application**: `get_database`, `get_scheduler`, and
+`get_app_manager` take the incoming `Request` and read `request.app.state`, so two
+applications running in the same process never share a database or scheduler.
+
+Library code that runs outside a request - a lifespan, a startup hook, a background
+task - has no `Request`, so it should capture the objects it needs (for example
+`app.state.database`) instead of calling these getters.
+
 ::: servicekit.api.dependencies
 
 ### Pagination

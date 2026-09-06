@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import signal
+import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,10 +18,11 @@ from sqlalchemy import text
 
 from servicekit import Database, SqliteDatabase
 from servicekit.logging import configure_logging, get_logger
+from servicekit.scheduler import Scheduler
 
 from .app import App, AppLoader
 from .auth import APIKeyMiddleware, load_api_keys_from_env, load_api_keys_from_file
-from .dependencies import get_database, get_scheduler, set_database, set_scheduler
+from .dependencies import get_scheduler
 from .middleware import add_error_handlers, add_logging_middleware
 from .routers import HealthRouter, JobRouter, MetricsRouter, SystemRouter
 from .routers.health import HealthCheck, HealthState
@@ -39,6 +42,7 @@ class _HealthOptions:
     prefix: str
     tags: list[str]
     checks: dict[str, HealthCheck]
+    include_database_check: bool
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,7 @@ class _JobOptions:
     prefix: str
     tags: list[str]
     max_concurrency: int | None
+    shutdown_timeout: float
 
 
 @dataclass(frozen=True)
@@ -212,15 +217,11 @@ class BaseServiceBuilder:
         include_database_check: bool = True,
     ) -> Self:
         """Add health check endpoint with optional custom checks."""
-        health_checks = checks or {}
-
-        if include_database_check:
-            health_checks["database"] = self._create_database_health_check()
-
         self._health_options = _HealthOptions(
             prefix=prefix,
             tags=list(tags) if tags is not None else ["Observability"],
-            checks=health_checks,
+            checks=dict(checks) if checks else {},
+            include_database_check=include_database_check,
         )
         return self
 
@@ -243,12 +244,14 @@ class BaseServiceBuilder:
         prefix: str = "/api/v1/jobs",
         tags: list[str] | None = None,
         max_concurrency: int | None = None,
+        shutdown_timeout: float = 10.0,
     ) -> Self:
         """Add job scheduler endpoints."""
         self._job_options = _JobOptions(
             prefix=prefix,
             tags=list(tags) if tags is not None else ["Jobs"],
             max_concurrency=max_concurrency,
+            shutdown_timeout=shutdown_timeout,
         )
         return self
 
@@ -425,10 +428,15 @@ class BaseServiceBuilder:
             app.state.auth_key_count = len(self._auth_options.api_keys)
 
         if self._health_options:
+            health_checks: dict[str, HealthCheck] = dict(self._health_options.checks)
+            if self._health_options.include_database_check:
+                health_checks["database"] = self._create_database_health_check(app)
+            if self._registration_options is not None:
+                health_checks["registration"] = self._create_registration_health_check(app)
             health_router = HealthRouter.create(
                 prefix=self._health_options.prefix,
                 tags=self._health_options.tags,
-                checks=self._health_options.checks,
+                checks=health_checks,
             )
             app.include_router(health_router)
 
@@ -516,10 +524,8 @@ class BaseServiceBuilder:
 
         # Initialize app manager for metadata queries (always, even if no apps)
         from .app import AppManager
-        from .dependencies import set_app_manager
 
-        app_manager = AppManager(self._app_configs)
-        set_app_manager(app_manager)
+        app.state.app_manager = AppManager(self._app_configs)
 
         for dependency, override in self._dependency_overrides.items():
             app.dependency_overrides[dependency] = override
@@ -589,6 +595,7 @@ class BaseServiceBuilder:
         pool_recycle = self._pool_recycle
         pool_pre_ping = self._pool_pre_ping
         job_options = self._job_options
+        create_scheduler = self._create_scheduler
         include_logging = self._include_logging
         registration_options = self._registration_options
         health_path = self._health_options.prefix if self._health_options else None
@@ -602,87 +609,97 @@ class BaseServiceBuilder:
             if include_logging:
                 configure_logging()
 
-            # Use injected database or create new one from URL
-            if database_instance is not None:
-                database = database_instance
-                should_manage_lifecycle = False
-            else:
-                # Create appropriate database type based on URL
-                if "sqlite" in database_url.lower():
-                    database = SqliteDatabase(
-                        database_url,
-                        pool_size=pool_size,
-                        max_overflow=max_overflow,
-                        pool_recycle=pool_recycle,
-                        pool_pre_ping=pool_pre_ping,
-                    )
-                else:
-                    database = Database(
-                        database_url,
-                        pool_size=pool_size,
-                        max_overflow=max_overflow,
-                        pool_recycle=pool_recycle,
-                        pool_pre_ping=pool_pre_ping,
-                    )
-                should_manage_lifecycle = True
-
-            # Always initialize database (safe to call multiple times)
-            await database.init()
-
-            set_database(database)
-            app.state.database = database
-
-            # Initialize scheduler if jobs are enabled
-            if job_options is not None:
-                from servicekit.scheduler import InMemoryScheduler
-
-                scheduler = InMemoryScheduler(max_concurrency=job_options.max_concurrency)
-                set_scheduler(scheduler)
-                app.state.scheduler = scheduler
-
-            # Log auth configuration after logging is configured
-            if hasattr(app.state, "auth_source"):
-                auth_source = app.state.auth_source
-                key_count = app.state.auth_key_count
-
-                if auth_source == "direct_keys":
-                    logger.warning(
-                        "auth.direct_keys",
-                        message="Using direct API keys - not recommended for production",
-                        count=key_count,
-                    )
-                elif auth_source.startswith("file:"):
-                    file_path = auth_source.split(":", 1)[1]
-                    logger.info("auth.loaded_from_file", file=file_path, count=key_count)
-                elif auth_source.startswith("env:"):
-                    parts = auth_source.split(":", 2)
-                    env_var = parts[1]
-                    if len(parts) > 2 and parts[2] == "empty":
-                        logger.warning(
-                            "auth.no_keys",
-                            message=f"No API keys found in {env_var}. Service will reject all requests.",
-                        )
-                    else:
-                        logger.info("auth.loaded_from_env", env_var=env_var, count=key_count)
-
-            for hook in startup_hooks:
-                await hook(app)
-
-            # Deferred registration: always wait for app to be ready before registering.
-            # The task is created now and runs after yield (once uvicorn is serving).
-            # For fail_on_error=True we await it immediately after yield so that
-            # exceptions still propagate (the app shuts down on the first request cycle).
+            database: Database | None = None
+            scheduler: Scheduler | None = None
+            should_manage_lifecycle = False
             registration_task: asyncio.Task[None] | None = None
 
-            if registration_options is not None:
-                registration_task = asyncio.create_task(
-                    _register_after_ready(registration_options, info, app, health_path),
-                    name="servicekit-deferred-registration",
-                )
-
             try:
+                # Use injected database or create new one from URL
+                if database_instance is not None:
+                    database = database_instance
+                else:
+                    # Create appropriate database type based on URL
+                    if "sqlite" in database_url.lower():
+                        database = SqliteDatabase(
+                            database_url,
+                            pool_size=pool_size,
+                            max_overflow=max_overflow,
+                            pool_recycle=pool_recycle,
+                            pool_pre_ping=pool_pre_ping,
+                        )
+                    else:
+                        database = Database(
+                            database_url,
+                            pool_size=pool_size,
+                            max_overflow=max_overflow,
+                            pool_recycle=pool_recycle,
+                            pool_pre_ping=pool_pre_ping,
+                        )
+                    should_manage_lifecycle = True
+
+                # Always initialize database (safe to call multiple times)
+                await database.init()
+                app.state.database = database
+
+                # Initialize scheduler if jobs are enabled
+                if job_options is not None:
+                    scheduler = create_scheduler(job_options)
+                    app.state.scheduler = scheduler
+
+                # Log auth configuration after logging is configured
+                if hasattr(app.state, "auth_source"):
+                    auth_source = app.state.auth_source
+                    key_count = app.state.auth_key_count
+
+                    if auth_source == "direct_keys":
+                        logger.warning(
+                            "auth.direct_keys",
+                            message="Using direct API keys - not recommended for production",
+                            count=key_count,
+                        )
+                    elif auth_source.startswith("file:"):
+                        file_path = auth_source.split(":", 1)[1]
+                        logger.info("auth.loaded_from_file", file=file_path, count=key_count)
+                    elif auth_source.startswith("env:"):
+                        parts = auth_source.split(":", 2)
+                        env_var = parts[1]
+                        if len(parts) > 2 and parts[2] == "empty":
+                            logger.warning(
+                                "auth.no_keys",
+                                message=f"No API keys found in {env_var}. Service will reject all requests.",
+                            )
+                        else:
+                            logger.info("auth.loaded_from_env", env_var=env_var, count=key_count)
+
+                for hook in startup_hooks:
+                    await hook(app)
+
+                # Deferred registration: always wait for app to be ready before registering.
+                # The task is created now and runs after yield (once uvicorn is serving).
+                if registration_options is not None:
+                    registration_task = asyncio.create_task(
+                        _run_registration(registration_options, info, app, health_path),
+                        name="servicekit-deferred-registration",
+                    )
+
                 yield
             finally:
+                first_error: BaseException | None = None
+
+                def record_cleanup_error(step: str, error: BaseException) -> None:
+                    """Log a cleanup failure and remember the first one encountered."""
+                    nonlocal first_error
+                    logger.error(
+                        "lifespan.cleanup_error",
+                        step=step,
+                        error=str(error),
+                        error_type=type(error).__name__,
+                    )
+                    if first_error is None:
+                        first_error = error
+
+                # 1. Cancel and await the deferred registration task
                 if registration_task is not None:
                     if not registration_task.done():
                         registration_task.cancel()
@@ -690,18 +707,26 @@ class BaseServiceBuilder:
                         await registration_task
                     except asyncio.CancelledError:
                         pass
+                    except Exception as error:
+                        logger.error(
+                            "lifespan.registration_task_failed",
+                            error=str(error),
+                            error_type=type(error).__name__,
+                        )
 
-                # Read registration info stored by the background task
-                registration_info: dict[str, Any] | None = getattr(app.state, "registration_info", None)
+                # 2. Stop keepalive and deregister the service
+                try:
+                    registration_info: dict[str, Any] | None = getattr(app.state, "registration_info", None)
+                    keepalive_handle = getattr(app.state, "keepalive", None)
 
-                # Stop keepalive and deregister service if registration completed
-                if registration_options is not None and registration_info:
-                    from .registration import deregister_service, stop_keepalive
+                    if keepalive_handle is not None:
+                        from .registration import stop_keepalive
 
-                    if registration_options.enable_keepalive:
-                        await stop_keepalive()
+                        await stop_keepalive(keepalive_handle)
 
-                    if registration_options.auto_deregister:
+                    if registration_options is not None and registration_info and registration_options.auto_deregister:
+                        from .registration import deregister_service
+
                         service_id = registration_info.get("service_id")
                         orchestrator_url = registration_info.get("orchestrator_url")
                         if service_id and orchestrator_url:
@@ -712,25 +737,61 @@ class BaseServiceBuilder:
                                 service_key=registration_options.service_key,
                                 service_key_env=registration_options.service_key_env,
                             )
+                except Exception as error:
+                    record_cleanup_error("deregistration", error)
 
+                # 3. Drain the scheduler before the database it may still be using goes away
+                if scheduler is not None:
+                    try:
+                        shutdown_timeout = job_options.shutdown_timeout if job_options else 10.0
+                        await scheduler.shutdown(timeout=shutdown_timeout)
+                    except Exception as error:
+                        record_cleanup_error("scheduler_shutdown", error)
+
+                # 4. Run shutdown hooks, each isolated so one failure cannot skip the rest
                 for hook in shutdown_hooks:
-                    await hook(app)
-                app.state.database = None
+                    try:
+                        await hook(app)
+                    except Exception as error:
+                        record_cleanup_error("shutdown_hook", error)
 
-                # Dispose database only if we created it
-                if should_manage_lifecycle:
-                    await database.dispose()
+                # 5. Clear per-application state
+                try:
+                    app.state.database = None
+                    app.state.scheduler = None
+                    app.state.keepalive = None
+                except Exception as error:
+                    record_cleanup_error("clear_state", error)
+
+                # 6. Dispose the database only if we created it
+                if should_manage_lifecycle and database is not None:
+                    try:
+                        await database.dispose()
+                    except Exception as error:
+                        record_cleanup_error("database_dispose", error)
+
+                # Surface the first cleanup failure unless an error is already propagating
+                if first_error is not None and sys.exc_info()[1] is None:
+                    raise first_error
 
         return lifespan
 
+    def _create_scheduler(self, job_options: _JobOptions) -> Scheduler:
+        """Create the scheduler used by the application (override in subclasses)."""
+        from servicekit.scheduler import InMemoryScheduler
+
+        return InMemoryScheduler(max_concurrency=job_options.max_concurrency)
+
     @staticmethod
-    def _create_database_health_check() -> HealthCheck:
-        """Create database connectivity health check."""
+    def _create_database_health_check(app: FastAPI) -> HealthCheck:
+        """Create database connectivity health check bound to a specific application."""
 
         async def check_database() -> tuple[HealthState, str | None]:
             try:
-                db = get_database()
-                async with db.session() as session:
+                database: Database | None = getattr(app.state, "database", None)
+                if database is None:
+                    return (HealthState.UNHEALTHY, "Database not initialized")
+                async with database.session() as session:
                     # Simple connectivity check - execute a trivial query
                     await session.execute(text("SELECT 1"))
                     return (HealthState.HEALTHY, None)
@@ -738,6 +799,17 @@ class BaseServiceBuilder:
                 return (HealthState.UNHEALTHY, f"Database connection failed: {str(e)}")
 
         return check_database
+
+    @staticmethod
+    def _create_registration_health_check(app: FastAPI) -> HealthCheck:
+        """Create health check reporting whether service registration is in a fatal state."""
+
+        async def check_registration() -> tuple[HealthState, str | None]:
+            if getattr(app.state, "registration_failed", False):
+                return (HealthState.UNHEALTHY, "Service registration failed")
+            return (HealthState.HEALTHY, None)
+
+        return check_registration
 
     @staticmethod
     def _create_openapi_customizer(app: FastAPI) -> Callable[[], dict[str, Any]]:
@@ -851,7 +923,16 @@ async def _wait_until_ready(
     return False
 
 
-async def _register_and_start_keepalive(options: _RegistrationOptions, info: BaseModel) -> dict[str, Any] | None:
+def _fail_registration(app: FastAPI, reason: str) -> None:
+    """Mark registration as fatally failed and request a graceful process shutdown."""
+    app.state.registration_failed = True
+    logger.critical("registration.fatal", reason=reason)
+    signal.raise_signal(signal.SIGTERM)
+
+
+async def _register_and_start_keepalive(
+    options: _RegistrationOptions, info: BaseModel, app: FastAPI
+) -> dict[str, Any] | None:
     """Register with orchestrator and start keepalive. Returns registration info."""
     from .registration import RegistrationConfig, register_service, start_keepalive
 
@@ -889,8 +970,9 @@ async def _register_and_start_keepalive(options: _RegistrationOptions, info: Bas
                 service_key=options.service_key,
                 service_key_env=options.service_key_env,
             )
-            await start_keepalive(
+            app.state.keepalive = await start_keepalive(
                 ping_url=ping_url,
+                service_id=str(registration_info.get("service_id", "")),
                 interval=options.keepalive_interval,
                 timeout=options.timeout,
                 service_key=options.service_key,
@@ -909,18 +991,21 @@ async def _register_after_ready(
     port = _resolve_port(options)
     ready = await _wait_until_ready(port, health_path=health_path)
     if not ready:
-        logger.error(
-            "registration.aborted",
-            port=port,
-            message="App never became ready, skipping registration",
-        )
+        if options.fail_on_error:
+            _fail_registration(app, f"App on port {port} never became ready, cannot register")
+        else:
+            logger.error(
+                "registration.aborted",
+                port=port,
+                message="App never became ready, skipping registration",
+            )
         return
 
     # Shield registration from cancellation so that if the POST succeeds,
     # app.state.registration_info is always written before the task exits.
     # This prevents a leaked registration when shutdown cancels the task
     # between the successful POST and the state assignment.
-    shielded = asyncio.ensure_future(_register_and_start_keepalive(options, info))
+    shielded = asyncio.ensure_future(_register_and_start_keepalive(options, info, app))
     try:
         registration_info = await asyncio.shield(shielded)
     except asyncio.CancelledError:
@@ -929,3 +1014,19 @@ async def _register_after_ready(
         registration_info = await shielded
     if registration_info:
         app.state.registration_info = registration_info
+
+
+async def _run_registration(
+    options: _RegistrationOptions, info: BaseModel, app: FastAPI, health_path: str | None
+) -> None:
+    """Run deferred registration, requesting a graceful shutdown when fail_on_error is set."""
+    try:
+        await _register_after_ready(options, info, app, health_path)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        if options.fail_on_error:
+            _fail_registration(app, f"Registration failed: {error}")
+        else:
+            logger.error("registration.error", error=str(error), error_type=type(error).__name__)
+        raise

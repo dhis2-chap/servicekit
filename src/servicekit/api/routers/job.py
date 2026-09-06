@@ -26,7 +26,7 @@ class JobRouter(Router):
         self,
         prefix: str,
         tags: list[str],
-        scheduler_factory: Callable[[], Scheduler],
+        scheduler_factory: Callable[..., Scheduler],
         **kwargs: object,
     ) -> None:
         """Initialize job router with scheduler factory."""

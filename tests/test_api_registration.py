@@ -1,6 +1,7 @@
 """Tests for service registration with orchestrator."""
 
 import asyncio
+import json
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -646,7 +647,8 @@ async def test_start_keepalive():
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_response)
 
         # Start keepalive with short interval for testing
-        await start_keepalive(
+        handle = await start_keepalive(
+            service_id="test-service",
             ping_url="http://orchestrator:9000/services/01K83B5V85PQZ1HTH4DQ7NC9JM/$ping",
             interval=0.1,
             timeout=5.0,
@@ -659,7 +661,7 @@ async def test_start_keepalive():
         assert mock_client.return_value.__aenter__.return_value.put.call_count >= 1
 
         # Clean up
-        await stop_keepalive()
+        await stop_keepalive(handle)
 
 
 @pytest.mark.asyncio
@@ -674,14 +676,15 @@ async def test_stop_keepalive():
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_response)
 
         # Start keepalive
-        await start_keepalive(
+        handle = await start_keepalive(
+            service_id="test-service",
             ping_url="http://orchestrator:9000/services/test/$ping",
             interval=0.1,
             timeout=5.0,
         )
 
         # Stop it immediately
-        await stop_keepalive()
+        await stop_keepalive(handle)
 
         # Give it time to ensure it doesn't ping again
         initial_count = mock_client.return_value.__aenter__.return_value.put.call_count
@@ -704,7 +707,8 @@ async def test_keepalive_handles_errors_gracefully():
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_response)
 
         # Start keepalive - should not crash despite errors
-        await start_keepalive(
+        handle = await start_keepalive(
+            service_id="test-service",
             ping_url="http://orchestrator:9000/services/test/$ping",
             interval=0.1,
             timeout=5.0,
@@ -717,7 +721,7 @@ async def test_keepalive_handles_errors_gracefully():
         assert mock_client.return_value.__aenter__.return_value.put.call_count >= 1
 
         # Clean up
-        await stop_keepalive()
+        await stop_keepalive(handle)
 
 
 @pytest.mark.asyncio
@@ -918,7 +922,8 @@ async def test_keepalive_sends_service_key():
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_response)
 
         # Start keepalive with service key
-        await start_keepalive(
+        handle = await start_keepalive(
+            service_id="test-service",
             ping_url="http://orchestrator:9000/services/test/$ping",
             interval=0.1,
             timeout=5.0,
@@ -935,7 +940,7 @@ async def test_keepalive_sends_service_key():
         assert headers.get("X-Service-Key") == "keepalive-secret-key"
 
         # Clean up
-        await stop_keepalive()
+        await stop_keepalive(handle)
 
 
 @pytest.mark.asyncio
@@ -1012,7 +1017,8 @@ async def test_keepalive_reregisters_on_404():
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_put_response)
         mock_register.return_value = new_registration
 
-        await start_keepalive(
+        handle = await start_keepalive(
+            service_id="test-service",
             ping_url="http://orchestrator:9000/services/test-service/$ping",
             interval=0.05,
             timeout=5.0,
@@ -1026,7 +1032,7 @@ async def test_keepalive_reregisters_on_404():
         # Verify register_service was called
         assert mock_register.call_count >= 1
 
-        await stop_keepalive()
+        await stop_keepalive(handle)
 
 
 @pytest.mark.asyncio
@@ -1053,7 +1059,8 @@ async def test_keepalive_grace_period_respected():
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_put_response)
         mock_register.return_value = new_registration
 
-        await start_keepalive(
+        handle = await start_keepalive(
+            service_id="test-service",
             ping_url="http://orchestrator:9000/services/test-service/$ping",
             interval=0.05,
             timeout=5.0,
@@ -1069,7 +1076,7 @@ async def test_keepalive_grace_period_respected():
         await asyncio.sleep(0.25)
         assert mock_register.call_count >= 1
 
-        await stop_keepalive()
+        await stop_keepalive(handle)
 
 
 @pytest.mark.asyncio
@@ -1089,7 +1096,8 @@ async def test_keepalive_reregistration_failure_retries():
         # Re-registration fails every time
         mock_register.return_value = None
 
-        await start_keepalive(
+        handle = await start_keepalive(
+            service_id="test-service",
             ping_url="http://orchestrator:9000/services/test-service/$ping",
             interval=0.05,
             timeout=5.0,
@@ -1103,7 +1111,7 @@ async def test_keepalive_reregistration_failure_retries():
         # Should have retried re-registration multiple times
         assert mock_register.call_count >= 2
 
-        await stop_keepalive()
+        await stop_keepalive(handle)
 
 
 @pytest.mark.asyncio
@@ -1122,7 +1130,8 @@ async def test_keepalive_non_404_does_not_reregister():
     ):
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_put_response)
 
-        await start_keepalive(
+        handle = await start_keepalive(
+            service_id="test-service",
             ping_url="http://orchestrator:9000/services/test-service/$ping",
             interval=0.05,
             timeout=5.0,
@@ -1135,7 +1144,7 @@ async def test_keepalive_non_404_does_not_reregister():
         # register_service should never be called for non-404 errors
         assert mock_register.call_count == 0
 
-        await stop_keepalive()
+        await stop_keepalive(handle)
 
 
 @pytest.mark.asyncio
@@ -1151,7 +1160,8 @@ async def test_keepalive_no_registration_kwargs_skips_reregistration():
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_put_response)
 
         # Start without registration_kwargs -- backward compatible behavior
-        await start_keepalive(
+        handle = await start_keepalive(
+            service_id="test-service",
             ping_url="http://orchestrator:9000/services/test-service/$ping",
             interval=0.05,
             timeout=5.0,
@@ -1162,4 +1172,73 @@ async def test_keepalive_no_registration_kwargs_skips_reregistration():
         # Task should still be running (not crashed)
         assert mock_client.return_value.__aenter__.return_value.put.call_count >= 1
 
-        await stop_keepalive()
+        await stop_keepalive(handle)
+
+
+@pytest.mark.asyncio
+async def test_keepalive_reregistration_posts_full_service_info():
+    """Re-registration after a 404 sends the original service info, not an empty object."""
+    info = CustomServiceInfo(id="test-service", display_name="Test Service", version="2.1.0", team="analytics")
+    registration_config = RegistrationConfig(
+        orchestrator_url="http://orchestrator:9000/services/$register",
+        host="test-service",
+        port=8000,
+        info=info,
+        max_retries=1,
+        retry_delay=0.0,
+        timeout=1.0,
+    )
+
+    posted_bodies: list[dict] = []
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        """Answer pings with 404 and record registration POST bodies."""
+        if request.method == "PUT":
+            return httpx.Response(404, json={"detail": "not found"})
+        posted_bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ping_url": "http://orchestrator:9000/services/test-service/$ping", "ttl_seconds": 30},
+        )
+
+    transport = httpx.MockTransport(handle_request)
+    original_client = httpx.AsyncClient
+
+    def make_client(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        """Build an AsyncClient wired to the mock transport."""
+        kwargs["transport"] = transport
+        return original_client(*args, **kwargs)  # type: ignore[arg-type]
+
+    with patch("httpx.AsyncClient", make_client):
+        handle = await start_keepalive(
+            ping_url="http://orchestrator:9000/services/test-service/$ping",
+            service_id="test-service",
+            interval=0.01,
+            timeout=1.0,
+            registration_config=registration_config,
+            re_register_grace_period=0.01,
+        )
+
+        for _ in range(50):
+            if posted_bodies:
+                break
+            await asyncio.sleep(0.02)
+
+        await stop_keepalive(handle)
+
+    assert posted_bodies, "re-registration never POSTed to the orchestrator"
+    body = posted_bodies[0]
+    assert body["id"] == "test-service"
+    assert body["info"]["id"] == "test-service"
+    assert body["info"]["display_name"] == "Test Service"
+    assert body["info"]["version"] == "2.1.0"
+    assert body["info"]["team"] == "analytics"
+
+
+def test_registration_config_dump_preserves_subclass_fields():
+    """RegistrationConfig serializes the concrete info subclass, not the BaseModel view."""
+    config = RegistrationConfig(
+        info=CustomServiceInfo(id="test-service", display_name="Test Service", team="analytics"),
+    )
+    assert config.model_dump()["info"]["id"] == "test-service"
+    assert config.model_dump()["info"]["team"] == "analytics"

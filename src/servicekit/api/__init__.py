@@ -3,15 +3,7 @@
 from .app import App, AppInfo, AppLoader, AppManager, AppManifest, EntryStaticFiles
 from .auth import APIKeyMiddleware, load_api_keys_from_env, load_api_keys_from_file, validate_api_key_format
 from .crud import CrudPermissions, CrudRouter
-from .dependencies import (
-    get_app_manager,
-    get_database,
-    get_scheduler,
-    get_session,
-    set_app_manager,
-    set_database,
-    set_scheduler,
-)
+from .dependencies import get_app_manager, get_database, get_scheduler, get_session
 from .middleware import add_error_handlers, add_logging_middleware, database_error_handler, validation_error_handler
 from .pagination import PaginationParams, create_paginated_response
 from .router import Router
@@ -42,12 +34,9 @@ __all__ = [
     "validate_api_key_format",
     # Dependencies
     "get_app_manager",
-    "set_app_manager",
     "get_database",
-    "set_database",
     "get_session",
     "get_scheduler",
-    "set_scheduler",
     # Middleware
     "add_error_handlers",
     "add_logging_middleware",

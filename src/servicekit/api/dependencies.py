@@ -1,11 +1,17 @@
-"""Generic FastAPI dependency injection for database and scheduler."""
+"""Request-scoped FastAPI dependencies resolved from ``request.app.state``.
+
+Every dependency here is per application: two apps running in the same process each
+resolve their own database, scheduler, and app manager. Library code that runs outside
+a request (for example inside a lifespan) should capture the objects it needs directly
+instead of calling these getters.
+"""
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from servicekit import Database
@@ -13,57 +19,37 @@ from servicekit.scheduler import Scheduler
 
 from .app import AppManager
 
-# Global database instance - should be initialized at app startup
-_database: Database | None = None
 
-# Global scheduler instance - should be initialized at app startup
-_scheduler: Scheduler | None = None
-
-
-def set_database(database: Database) -> None:
-    """Set the global database instance."""
-    global _database
-    _database = database
-
-
-def get_database() -> Database:
-    """Get the global database instance."""
-    if _database is None:
-        raise RuntimeError("Database not initialized. Call set_database() during app startup.")
-    return _database
+def get_database(request: Request) -> Database:
+    """Get the database bound to the current application."""
+    database: Database | None = getattr(request.app.state, "database", None)
+    if database is None:
+        raise RuntimeError(
+            "Database not available on app.state.database. "
+            "The application lifespan must run before requests are served."
+        )
+    return database
 
 
-async def get_session(db: Annotated[Database, Depends(get_database)]) -> AsyncIterator[AsyncSession]:
+async def get_session(database: Annotated[Database, Depends(get_database)]) -> AsyncIterator[AsyncSession]:
     """Get a database session for dependency injection."""
-    async with db.session() as session:
+    async with database.session() as session:
         yield session
 
 
-def set_scheduler(scheduler: Scheduler) -> None:
-    """Set the global scheduler instance."""
-    global _scheduler
-    _scheduler = scheduler
+def get_scheduler(request: Request) -> Scheduler:
+    """Get the scheduler bound to the current application."""
+    scheduler: Scheduler | None = getattr(request.app.state, "scheduler", None)
+    if scheduler is None:
+        raise RuntimeError(
+            "Scheduler not available on app.state.scheduler. Enable jobs with .with_jobs() and run the lifespan."
+        )
+    return scheduler
 
 
-def get_scheduler() -> Scheduler:
-    """Get the global scheduler instance."""
-    if _scheduler is None:
-        raise RuntimeError("Scheduler not initialized. Call set_scheduler() during app startup.")
-    return _scheduler
-
-
-# Global app manager instance - should be initialized at app startup
-_app_manager: AppManager | None = None
-
-
-def set_app_manager(manager: AppManager) -> None:
-    """Set the global app manager instance."""
-    global _app_manager
-    _app_manager = manager
-
-
-def get_app_manager() -> AppManager:
-    """Get the global app manager instance."""
-    if _app_manager is None:
-        raise RuntimeError("AppManager not initialized. Call set_app_manager() during app startup.")
-    return _app_manager
+def get_app_manager(request: Request) -> AppManager:
+    """Get the app manager bound to the current application."""
+    app_manager: AppManager | None = getattr(request.app.state, "app_manager", None)
+    if app_manager is None:
+        raise RuntimeError("AppManager not available on app.state.app_manager. Build the app with a ServiceBuilder.")
+    return app_manager
