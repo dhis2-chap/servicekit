@@ -15,7 +15,8 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from ulid import ULID
 
-from servicekit.api.crud import CrudRouter
+from servicekit.api.crud import CrudPermissions, CrudRouter
+from servicekit.exceptions import ConflictError
 from servicekit.manager import Manager
 
 
@@ -40,17 +41,34 @@ class FakeManager(Manager[ItemIn, ItemOut, ULID]):
 
     def __init__(self) -> None:
         self.entities: dict[ULID, ItemOut] = {}
+        self.find_all_calls = 0
+        self.find_paginated_calls = 0
+
+    async def create(self, data: ItemIn) -> ItemOut:
+        if data.id is not None and data.id in self.entities:
+            raise ConflictError(f"Entity with id {data.id} already exists")
+        return await self.save(data)
 
     async def save(self, data: ItemIn) -> ItemOut:
         entity_id = data.id or ULID()
-        entity = ItemOut(id=entity_id, name=data.name, description=data.description)
+        fields = data.model_dump(exclude_unset=True)
+        existing = self.entities.get(entity_id)
+        if existing is not None:
+            name = fields.get("name", existing.name)
+            description = fields["description"] if "description" in fields else existing.description
+        else:
+            name = data.name
+            description = data.description
+        entity = ItemOut(id=entity_id, name=name, description=description)
         self.entities[entity_id] = entity
         return entity
 
     async def find_all(self) -> list[ItemOut]:
+        self.find_all_calls += 1
         return list(self.entities.values())
 
     async def find_paginated(self, page: int, size: int) -> tuple[list[ItemOut], int]:
+        self.find_paginated_calls += 1
         all_items = list(self.entities.values())
         offset = (page - 1) * size
         paginated_items = all_items[offset : offset + size]
@@ -454,3 +472,146 @@ def test_collection_operation_supports_patch_method() -> None:
         route for route in router.router.routes if isinstance(route, APIRoute) and route.path == "/items/$bulk-update"
     )
     assert route.methods is not None and "PATCH" in route.methods
+
+
+def test_create_rejects_existing_id_with_conflict(
+    crud_client: tuple[TestClient, FakeManager, CrudRouter[ItemIn, ItemOut]],
+) -> None:
+    """POST with an already used id returns 409 and leaves the original entity untouched."""
+    client, manager, _ = crud_client
+    created = client.post("/items/", json={"name": "original", "description": "first"}).json()
+
+    response = client.post("/items/", json={"id": created["id"], "name": "overwrite", "description": "second"})
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    stored = manager.entities[ULID.from_str(created["id"])]
+    assert stored.name == "original"
+    assert stored.description == "first"
+
+
+def test_create_rejects_existing_id_when_update_is_disabled() -> None:
+    """POST cannot overwrite an entity when the router forbids updates."""
+    from servicekit.api.middleware import add_error_handlers
+
+    manager = FakeManager()
+
+    def manager_factory() -> Manager[ItemIn, ItemOut, ULID]:
+        return manager
+
+    router = CrudRouter[ItemIn, ItemOut](
+        prefix="/items",
+        tags=["items"],
+        entity_in_type=ItemIn,
+        entity_out_type=ItemOut,
+        manager_factory=manager_factory,
+        permissions=CrudPermissions(create=True, update=False),
+    )
+    app = FastAPI()
+    add_error_handlers(app)
+    app.include_router(router.router)
+    client = TestClient(app)
+
+    created = client.post("/items/", json={"name": "original"}).json()
+    response = client.post("/items/", json={"id": created["id"], "name": "overwrite"})
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert manager.entities[ULID.from_str(created["id"])].name == "original"
+    update_response = client.put(f"/items/{created['id']}", json={"name": "nope"})
+    assert update_response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
+
+
+def test_update_with_explicit_null_clears_field(
+    crud_client: tuple[TestClient, FakeManager, CrudRouter[ItemIn, ItemOut]],
+) -> None:
+    """PUT with an explicit null clears a nullable field."""
+    client, manager, _ = crud_client
+    created = client.post("/items/", json={"name": "widget", "description": "present"}).json()
+
+    response = client.put(f"/items/{created['id']}", json={"name": "widget", "description": None})
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["description"] is None
+    assert manager.entities[ULID.from_str(created["id"])].description is None
+
+
+def test_update_without_field_keeps_value(
+    crud_client: tuple[TestClient, FakeManager, CrudRouter[ItemIn, ItemOut]],
+) -> None:
+    """PUT without a field leaves the stored value untouched."""
+    client, manager, _ = crud_client
+    created = client.post("/items/", json={"name": "widget", "description": "present"}).json()
+
+    response = client.put(f"/items/{created['id']}", json={"name": "renamed"})
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["description"] == "present"
+    assert manager.entities[ULID.from_str(created["id"])].name == "renamed"
+
+
+@pytest.mark.parametrize("query", ["page=0&size=10", "page=1&size=101", "page=1&size=-1"])
+def test_find_all_rejects_out_of_bounds_pagination(
+    crud_client: tuple[TestClient, FakeManager, CrudRouter[ItemIn, ItemOut]],
+    query: str,
+) -> None:
+    """Pagination bounds are enforced before the manager is called."""
+    client, manager, _ = crud_client
+    client.post("/items/", json={"name": "alpha"})
+    manager.find_all_calls = 0
+
+    response = client.get(f"/items/?{query}")
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert manager.find_all_calls == 0
+    assert manager.find_paginated_calls == 0
+
+
+def test_find_all_returns_paginated_response(
+    crud_client: tuple[TestClient, FakeManager, CrudRouter[ItemIn, ItemOut]],
+) -> None:
+    """Supplying both page and size returns a paginated response."""
+    client, _, _ = crud_client
+    for name in ("alpha", "beta", "gamma"):
+        client.post("/items/", json={"name": name})
+
+    response = client.get("/items/?page=1&size=2")
+
+    assert response.status_code == status.HTTP_200_OK
+    payload = response.json()
+    assert payload["total"] == 3
+    assert payload["page"] == 1
+    assert payload["size"] == 2
+    assert len(payload["items"]) == 2
+
+
+def test_find_all_with_only_page_returns_plain_list(
+    crud_client: tuple[TestClient, FakeManager, CrudRouter[ItemIn, ItemOut]],
+) -> None:
+    """Supplying only one pagination parameter returns the unpaginated list."""
+    client, _, _ = crud_client
+    client.post("/items/", json={"name": "alpha"})
+
+    response = client.get("/items/?page=2")
+
+    assert response.status_code == status.HTTP_200_OK
+    payload = response.json()
+    assert isinstance(payload, list)
+    assert len(payload) == 1
+
+
+def test_find_all_documents_pagination_query_parameters(
+    crud_client: tuple[TestClient, FakeManager, CrudRouter[ItemIn, ItemOut]],
+) -> None:
+    """Pagination bounds are visible in the generated OpenAPI schema."""
+    client, _, _ = crud_client
+
+    schema = client.get("/openapi.json").json()
+    parameters = schema["paths"]["/items"]["get"]["parameters"]
+    by_name = {parameter["name"]: parameter for parameter in parameters}
+
+    assert by_name["page"]["in"] == "query"
+    assert by_name["size"]["in"] == "query"
+    page_schema = next(entry for entry in by_name["page"]["schema"]["anyOf"] if entry.get("type") == "integer")
+    size_schema = next(entry for entry in by_name["size"]["schema"]["anyOf"] if entry.get("type") == "integer")
+    assert page_schema["minimum"] == 1
+    assert size_schema["minimum"] == 1
+    assert size_schema["maximum"] == 100

@@ -29,6 +29,7 @@ class _FixtureEntity(Entity):
 
     name: Mapped[str] = mapped_column(nullable=False)
     data: Mapped[dict] = mapped_column(PickleType(protocol=4), nullable=False)
+    description: Mapped[str | None] = mapped_column(nullable=True, default=None)
 
 
 class _FixtureEntityIn(EntityIn):
@@ -37,6 +38,7 @@ class _FixtureEntityIn(EntityIn):
     __test__ = False  # Tell pytest not to collect this class
     name: str
     data: DemoData
+    description: str | None = None
 
 
 class _FixtureEntityOut(EntityOut):
@@ -45,6 +47,7 @@ class _FixtureEntityOut(EntityOut):
     __test__ = False  # Tell pytest not to collect this class
     name: str
     data: DemoData
+    description: str | None = None
 
 
 class _FixtureEntityRepository(BaseRepository[_FixtureEntity, ULID]):

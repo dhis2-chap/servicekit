@@ -333,3 +333,61 @@ class TestBaseRepository:
                 assert await repo3.count() == 1
 
         await db.dispose()
+
+    async def test_find_all_is_ordered_by_id(self) -> None:
+        """Test that listing entities returns them ordered by ID."""
+        db = SqliteDatabaseBuilder.in_memory().build()
+        await db.init()
+
+        async with db.session() as session:
+            repo = BaseRepository[TestEntity, ULID](session, TestEntity)
+
+            ids = sorted(ULID() for _ in range(5))
+            for entity_id in reversed(ids):
+                await repo.save(TestEntity(id=entity_id, name="entity", data=DemoData(x=1, y=1, z=1, tags=[])))
+            await repo.commit()
+
+            assert [entity.id for entity in await repo.find_all()] == ids
+
+        await db.dispose()
+
+    async def test_find_all_paginated_is_ordered_by_id(self) -> None:
+        """Test that paginated pages follow ID order without overlapping."""
+        db = SqliteDatabaseBuilder.in_memory().build()
+        await db.init()
+
+        async with db.session() as session:
+            repo = BaseRepository[TestEntity, ULID](session, TestEntity)
+
+            ids = sorted(ULID() for _ in range(5))
+            for entity_id in reversed(ids):
+                await repo.save(TestEntity(id=entity_id, name="entity", data=DemoData(x=1, y=1, z=1, tags=[])))
+            await repo.commit()
+
+            first_page = await repo.find_all_paginated(0, 2)
+            second_page = await repo.find_all_paginated(2, 2)
+
+            assert [entity.id for entity in first_page] == ids[:2]
+            assert [entity.id for entity in second_page] == ids[2:4]
+
+        await db.dispose()
+
+    async def test_flush_makes_pending_entity_visible_before_commit(self) -> None:
+        """Test that flush() persists pending changes within the transaction."""
+        db = SqliteDatabaseBuilder.in_memory().build()
+        await db.init()
+
+        async with db.session() as session:
+            repo = BaseRepository[TestEntity, ULID](session, TestEntity)
+
+            entity = TestEntity(name="pending", data=DemoData(x=1, y=1, z=1, tags=[]))
+            await repo.save(entity)
+            await repo.flush()
+
+            assert await repo.count() == 1
+
+            await repo.rollback()
+
+            assert await repo.count() == 0
+
+        await db.dispose()

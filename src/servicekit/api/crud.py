@@ -1,9 +1,9 @@
 """CRUD router base class for standard REST operations."""
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Annotated, Any, Callable, cast
 
-from fastapi import Depends, Request, Response, status
+from fastapi import Depends, Query, Request, Response, status
 from pydantic import BaseModel
 from ulid import ULID
 
@@ -180,7 +180,7 @@ class CrudRouter[InSchemaT: BaseModel, OutSchemaT: BaseModel](Router):
         ) -> OutSchemaT:
             from .utilities import build_location_url
 
-            created_entity = await manager.save(entity_in)
+            created_entity = await manager.create(entity_in)
             entity_id = getattr(created_entity, "id")
             response.headers["Location"] = build_location_url(request, f"{router_prefix}/{entity_id}")
             return created_entity
@@ -190,19 +190,23 @@ class CrudRouter[InSchemaT: BaseModel, OutSchemaT: BaseModel](Router):
         create.__annotations__["return"] = entity_out_annotation
 
     def _register_find_all_route(self, manager_dependency: Any, manager_annotation: Any) -> None:
+        from .pagination import PaginationParams, create_paginated_response
+
         entity_out_annotation: Any = self.entity_out_type
         collection_response_model: Any = list[entity_out_annotation] | PaginatedResponse[entity_out_annotation]
 
         @self.router.get("", response_model=collection_response_model)
         async def find_all(
-            page: int | None = None,
-            size: int | None = None,
+            pagination: Annotated[PaginationParams, Query()],
             manager: Manager[InSchemaT, OutSchemaT, ULID] = manager_dependency,
         ) -> list[OutSchemaT] | PaginatedResponse[OutSchemaT]:
-            from .pagination import create_paginated_response
+            """List entities; pagination is opt-in and requires both page (>= 1) and size (1-100).
 
-            # Pagination is opt-in: both page and size must be provided
-            if page is not None and size is not None:
+            Supplying only one of them returns the plain unpaginated list.
+            """
+            if pagination.is_paginated():
+                page = cast(int, pagination.page)
+                size = cast(int, pagination.size)
                 items, total = await manager.find_paginated(page, size)
                 return create_paginated_response(items, total, page, size)
             return await manager.find_all()
@@ -234,8 +238,7 @@ class CrudRouter[InSchemaT: BaseModel, OutSchemaT: BaseModel](Router):
         find_by_id.__annotations__["return"] = entity_out_annotation
 
     def _register_update_route(self, manager_dependency: Any, manager_annotation: Any) -> None:
-        entity_in_type = self.entity_in_type
-        entity_in_annotation: Any = entity_in_type
+        entity_in_annotation: Any = self.entity_in_type
         entity_out_annotation: Any = self.entity_out_type
         router_prefix = self.router.prefix
 
@@ -253,9 +256,7 @@ class CrudRouter[InSchemaT: BaseModel, OutSchemaT: BaseModel](Router):
                     f"Entity with id {entity_id} not found",
                     instance=f"{router_prefix}/{entity_id}",
                 )
-            entity_dict = entity_in.model_dump(exclude_unset=True)
-            entity_dict["id"] = ulid_id
-            entity_with_id = entity_in_type.model_validate(entity_dict)
+            entity_with_id = entity_in.model_copy(update={"id": ulid_id})
             return await manager.save(entity_with_id)
 
         self._annotate_manager(update, manager_annotation)

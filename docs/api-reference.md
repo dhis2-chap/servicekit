@@ -68,6 +68,15 @@ Base router classes and generic routers.
 
 #### CrudRouter
 
+Behavior of the generated endpoints:
+
+- `POST` creates only. Sending an ID that already exists returns `409 Conflict`; use `PUT` to update.
+- `PUT` applies exactly the fields present in the request body. An omitted field is left untouched; an explicit
+  `null` clears a nullable field.
+- `GET` on a collection is ordered by ID (creation order for ULIDs). Pagination is opt-in and requires both
+  `page` (>= 1) and `size` (1-100); out-of-range values return `422`, and supplying only one of them returns the
+  plain unpaginated list.
+
 ::: servicekit.api.crud.CrudRouter
 
 #### CrudPermissions

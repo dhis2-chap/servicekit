@@ -27,6 +27,16 @@ class Repository[T, IdT = ULID](ABC):
         ...
 
     @abstractmethod
+    async def flush(self) -> None:
+        """Flush pending changes to the database without committing."""
+        ...
+
+    @abstractmethod
+    async def rollback(self) -> None:
+        """Roll back the current database transaction."""
+        ...
+
+    @abstractmethod
     async def refresh_many(self, entities: Iterable[T]) -> None:
         """Refresh multiple entities from the database."""
         ...
@@ -63,12 +73,12 @@ class Repository[T, IdT = ULID](ABC):
 
     @abstractmethod
     async def find_all(self) -> Sequence[T]:
-        """Find all entities."""
+        """Find all entities ordered by ID."""
         ...
 
     @abstractmethod
     async def find_all_paginated(self, offset: int, limit: int) -> Sequence[T]:
-        """Find entities with pagination."""
+        """Find entities with pagination, ordered by ID."""
         ...
 
     @abstractmethod
@@ -105,6 +115,14 @@ class BaseRepository[T, IdT = ULID](Repository[T, IdT]):
     async def commit(self) -> None:
         """Commit the current database transaction."""
         await self.s.commit()
+
+    async def flush(self) -> None:
+        """Flush pending changes to the database without committing."""
+        await self.s.flush()
+
+    async def rollback(self) -> None:
+        """Roll back the current database transaction."""
+        await self.s.rollback()
 
     async def refresh_many(self, entities: Iterable[T]) -> None:
         """Refresh multiple entities from the database."""
@@ -146,13 +164,15 @@ class BaseRepository[T, IdT = ULID](Repository[T, IdT]):
         return await self.s.scalar(q) or False
 
     async def find_all(self) -> Sequence[T]:
-        """Find all entities."""
-        result = await self.s.scalars(select(self.model))
+        """Find all entities ordered by ID."""
+        id_col = getattr(self.model, "id")
+        result = await self.s.scalars(select(self.model).order_by(id_col))
         return result.all()
 
     async def find_all_paginated(self, offset: int, limit: int) -> Sequence[T]:
-        """Find entities with pagination."""
-        result = await self.s.scalars(select(self.model).offset(offset).limit(limit))
+        """Find entities with pagination, ordered by ID."""
+        id_col = getattr(self.model, "id")
+        result = await self.s.scalars(select(self.model).order_by(id_col).offset(offset).limit(limit))
         return result.all()
 
     async def find_all_by_id(self, ids: Sequence[IdT]) -> Sequence[T]:

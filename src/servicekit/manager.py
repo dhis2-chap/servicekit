@@ -6,7 +6,9 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Iterable, Sequence
 
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 
+from servicekit.exceptions import ConflictError
 from servicekit.repository import BaseRepository
 
 if TYPE_CHECKING:
@@ -49,8 +51,13 @@ class Manager[InSchemaT: BaseModel, OutSchemaT: BaseModel, IdT](ABC):
     """Abstract manager interface for business logic operations."""
 
     @abstractmethod
+    async def create(self, data: InSchemaT) -> OutSchemaT:
+        """Create a new entity, never updating an existing one."""
+        ...
+
+    @abstractmethod
     async def save(self, data: InSchemaT) -> OutSchemaT:
-        """Save an entity."""
+        """Save an entity, inserting it or updating an existing one (upsert)."""
         ...
 
     @abstractmethod
@@ -130,9 +137,31 @@ class BaseManager[ModelT, InSchemaT: BaseModel, OutSchemaT: BaseModel, IdT](
         """Convert ORM entity to output schema."""
         return self.out_schema_cls.model_validate(entity, from_attributes=True)
 
+    async def create(self, data: InSchemaT) -> OutSchemaT:
+        """Create a new entity; raises ConflictError when its ID already exists (insert only, never an update)."""
+        data_dict = data.model_dump(exclude_unset=True)
+        entity_id = data_dict.get("id")
+
+        if entity_id is not None and await self.repo.exists_by_id(entity_id):
+            raise ConflictError(f"Entity with id {entity_id} already exists")
+
+        if data_dict.get("id") is None:
+            data_dict.pop("id", None)
+        entity = self.model_cls(**data_dict)
+        await self.pre_save(entity, data)
+        await self.repo.save(entity)
+        try:
+            await self.repo.commit()
+        except IntegrityError as e:
+            await self.repo.rollback()
+            raise ConflictError(f"Entity with id {entity_id} already exists") from e
+        await self.repo.refresh_many([entity])
+        await self.post_save(entity)
+        return self._to_output_schema(entity)
+
     async def save(self, data: InSchemaT) -> OutSchemaT:
-        """Save an entity (create or update)."""
-        data_dict = data.model_dump(exclude_none=True)
+        """Save an entity, inserting it or updating an existing one (upsert); use create() for insert-only semantics."""
+        data_dict = data.model_dump(exclude_unset=True)
         entity_id = data_dict.get("id")
         existing: ModelT | None = None
 
@@ -180,12 +209,13 @@ class BaseManager[ModelT, InSchemaT: BaseModel, OutSchemaT: BaseModel, IdT](
         return self._to_output_schema(existing)
 
     async def save_all(self, items: Iterable[InSchemaT]) -> list[OutSchemaT]:
-        entities_to_insert: list[ModelT] = []
+        """Save multiple entities as one transaction, inserting or updating each (upsert)."""
+        inserted_entities: list[ModelT] = []
         updates: list[tuple[ModelT, dict[str, tuple[object, object]]]] = []
         outputs: list[ModelT] = []
 
         for data in items:
-            data_dict = data.model_dump(exclude_none=True)
+            data_dict = data.model_dump(exclude_unset=True)
             entity_id = data_dict.get("id")
             existing: ModelT | None = None
             if entity_id is not None:
@@ -196,7 +226,9 @@ class BaseManager[ModelT, InSchemaT: BaseModel, OutSchemaT: BaseModel, IdT](
                     data_dict.pop("id", None)
                 entity = self.model_cls(**data_dict)
                 await self.pre_save(entity, data)
-                entities_to_insert.append(entity)
+                await self.repo.save(entity)
+                await self.repo.flush()
+                inserted_entities.append(entity)
                 outputs.append(entity)
                 continue
 
@@ -226,13 +258,11 @@ class BaseManager[ModelT, InSchemaT: BaseModel, OutSchemaT: BaseModel, IdT](
             updates.append((existing, changes))
             outputs.append(existing)
 
-        if entities_to_insert:  # pragma: no branch
-            await self.repo.save_all(entities_to_insert)
         await self.repo.commit()
         if outputs:  # pragma: no branch
             await self.repo.refresh_many(outputs)
 
-        for entity in entities_to_insert:
+        for entity in inserted_entities:
             await self.post_save(entity)
         for entity, changes in updates:
             await self.post_update(entity, changes)
