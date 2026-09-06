@@ -166,7 +166,8 @@ See `docs/` for comprehensive guides and API reference.
 
 ```bash
 make test      # Run tests
-make lint      # Run linter
+make format    # Format code and apply lint fixes
+make lint      # Check formatting, linting and types
 make coverage  # Test coverage
 ```
 

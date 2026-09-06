@@ -1,4 +1,4 @@
-.PHONY: help install lint test coverage migrate upgrade clean docker-build docker-run docs docs-serve docs-build
+.PHONY: help install format lint test coverage migrate upgrade clean docker-build docker-run docs docs-serve docs-build
 
 # ==============================================================================
 # Venv
@@ -17,7 +17,8 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  install      Install dependencies"
-	@echo "  lint         Run linter and type checker"
+	@echo "  format       Format code and apply lint fixes"
+	@echo "  lint         Check formatting, linting and types"
 	@echo "  test         Run tests"
 	@echo "  coverage     Run tests with coverage reporting"
 	@echo "  migrate      Create a migration (use MSG='description')"
@@ -25,7 +26,7 @@ help:
 	@echo "  docs-serve   Serve documentation locally with live reload"
 	@echo "  docs-build   Build documentation site"
 	@echo "  docs         Alias for docs-serve"
-	@echo "  docker-build Build Docker image for examples"
+	@echo "  docker-build Build example Docker image (use EXAMPLE='core_api')"
 	@echo "  docker-run   Run example in Docker (use EXAMPLE='core_api')"
 	@echo "  clean        Clean up temporary files"
 
@@ -33,10 +34,15 @@ install:
 	@echo ">>> Installing dependencies"
 	@$(UV) sync --all-extras
 
-lint:
-	@echo ">>> Running linter"
+format:
+	@echo ">>> Formatting code"
 	@$(UV) run ruff format .
 	@$(UV) run ruff check . --fix
+
+lint:
+	@echo ">>> Running linter"
+	@$(UV) run ruff format --check .
+	@$(UV) run ruff check .
 	@echo ">>> Running type checker"
 	@$(UV) run mypy --explicit-package-bases src tests examples
 	@$(UV) run pyright
@@ -74,8 +80,12 @@ docs-build:
 docs: docs-serve
 
 docker-build:
-	@echo ">>> Building Docker image"
-	@docker build -t servicekit-examples .
+	@echo ">>> Building Docker image for example: $(EXAMPLE)"
+	@if [ -z "$(EXAMPLE)" ]; then \
+		echo "Error: EXAMPLE not specified. Usage: make docker-build EXAMPLE=core_api"; \
+		exit 1; \
+	fi
+	@docker build -f examples/$(EXAMPLE)/Dockerfile -t servicekit-$(EXAMPLE) .
 
 docker-run:
 	@echo ">>> Running Docker container with example: $(EXAMPLE)"
@@ -83,9 +93,7 @@ docker-run:
 		echo "Error: EXAMPLE not specified. Usage: make docker-run EXAMPLE=core_api"; \
 		exit 1; \
 	fi
-	@docker run --rm -p 8000:8000 \
-		-e EXAMPLE_MODULE=examples.$(EXAMPLE):app \
-		servicekit-examples
+	@docker run --rm -p 8000:8000 servicekit-$(EXAMPLE)
 
 clean:
 	@echo ">>> Cleaning up"
