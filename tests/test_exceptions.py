@@ -12,6 +12,7 @@ from servicekit.exceptions import (
     ServicekitException,
     UnauthorizedError,
     ValidationError,
+    classify_integrity_error,
 )
 
 
@@ -168,3 +169,29 @@ def test_exception_with_multiple_extensions() -> None:
     exc = BadRequestError("Invalid query", field="name", reason="too_short", min_length=3)
 
     assert exc.extensions == {"field": "name", "reason": "too_short", "min_length": 3}
+
+
+@pytest.mark.parametrize(
+    ("driver_message", "expected"),
+    [
+        ("FOREIGN KEY constraint failed", "foreign_key"),
+        ("UNIQUE constraint failed: t.id", "unique"),
+        ("NOT NULL constraint failed: t.name", "not_null"),
+        ("CHECK constraint failed: positive_amount", "check"),
+        ("database is locked", None),
+    ],
+)
+def test_classify_integrity_error(driver_message: str, expected: str | None) -> None:
+    """Test that driver messages map to safe constraint classifications."""
+    assert classify_integrity_error(Exception(driver_message)) == expected
+
+
+def test_classify_integrity_error_prefers_driver_error() -> None:
+    """Test that classification reads the driver error rather than the SQL statement."""
+
+    class WrappedError(Exception):
+        """Error carrying an orig attribute like SQLAlchemy's DBAPIError."""
+
+        orig = Exception("FOREIGN KEY constraint failed")
+
+    assert classify_integrity_error(WrappedError("INSERT INTO unique_names VALUES (?)")) == "foreign_key"

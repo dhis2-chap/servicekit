@@ -330,11 +330,17 @@ Returns `204 No Content` on success.
 
 ## Error Handling
 
+Job endpoints return RFC 9457 Problem Details with the `application/problem+json` content type.
+
 ### Invalid Job ID (400)
 
 ```json
 {
-  "detail": "Invalid job ID format"
+  "type": "urn:servicekit:error:invalid-ulid",
+  "title": "Invalid ULID Format",
+  "status": 400,
+  "detail": "Invalid job ID format: not-a-ulid",
+  "instance": "/api/v1/jobs/not-a-ulid"
 }
 ```
 
@@ -342,7 +348,11 @@ Returns `204 No Content` on success.
 
 ```json
 {
-  "detail": "Job not found"
+  "type": "urn:servicekit:error:not-found",
+  "title": "Resource Not Found",
+  "status": 404,
+  "detail": "Job with id 01JQRS7X... not found",
+  "instance": "/api/v1/jobs/01JQRS7X..."
 }
 ```
 
@@ -449,6 +459,26 @@ class TaggedScheduler(InMemoryScheduler):
         """Store a returned ULID on the record before the job completes."""
         assert isinstance(record, TaggedJobRecord)
         record.artifact_id = result if isinstance(result, ULID) else None
+```
+
+### Supplying a Custom Scheduler
+
+`BaseServiceBuilder._create_scheduler(job_options)` builds the scheduler the application uses. Override it
+to plug in a scheduler subclass or a different implementation. Its argument is the public
+`servicekit.api.JobOptions` dataclass, which carries the values passed to `with_jobs()`
+(`prefix`, `tags`, `max_concurrency`, `shutdown_timeout`).
+
+```python
+from servicekit.api import BaseServiceBuilder, JobOptions
+from servicekit.scheduler import Scheduler
+
+
+class TaggedServiceBuilder(BaseServiceBuilder):
+    """Service builder that installs a custom scheduler."""
+
+    def _create_scheduler(self, job_options: JobOptions) -> Scheduler:
+        """Create the tagged scheduler for this application."""
+        return TaggedScheduler(max_concurrency=job_options.max_concurrency)
 ```
 
 ### Load Balancers and Proxies

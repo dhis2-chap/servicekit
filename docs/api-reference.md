@@ -70,7 +70,10 @@ Base router classes and generic routers.
 
 Behavior of the generated endpoints:
 
-- `POST` creates only. Sending an ID that already exists returns `409 Conflict`; use `PUT` to update.
+- `POST` creates only. Sending an ID that already exists returns `409 Conflict`; use `PUT` to update. Any other
+  database constraint violation (a foreign key, for example) also returns `409 Conflict`, with the generic detail
+  `Entity violates a database constraint` and, when it can be derived safely, a `constraint` extension naming the
+  kind of constraint (`foreign_key`, `unique`, `not_null` or `check`).
 - `PUT` applies exactly the fields present in the request body. An omitted field is left untouched; an explicit
   `null` clears a nullable field.
 - `GET` on a collection is ordered by ID (creation order for ULIDs). Pagination is opt-in and requires both

@@ -137,3 +137,18 @@ class ForbiddenError(ServicekitException):
             instance=instance,
             **extensions,
         )
+
+
+def classify_integrity_error(error: Exception) -> str | None:
+    """Classify a database integrity error as a safe constraint name, or None when unrecognized."""
+    driver_error = getattr(error, "orig", None)
+    message = str(driver_error if driver_error is not None else error).upper()
+    if "FOREIGN KEY" in message:
+        return "foreign_key"
+    if "UNIQUE" in message:
+        return "unique"
+    if "NOT NULL" in message:
+        return "not_null"
+    if "CHECK" in message:
+        return "check"
+    return None

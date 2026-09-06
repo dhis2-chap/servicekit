@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Iterable, Sequence
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
-from servicekit.exceptions import ConflictError
+from servicekit.exceptions import ConflictError, classify_integrity_error
 from servicekit.repository import BaseRepository
 
 if TYPE_CHECKING:
@@ -154,7 +154,11 @@ class BaseManager[ModelT, InSchemaT: BaseModel, OutSchemaT: BaseModel, IdT](
             await self.repo.commit()
         except IntegrityError as e:
             await self.repo.rollback()
-            raise ConflictError(f"Entity with id {entity_id} already exists") from e
+            if entity_id is not None and await self.repo.exists_by_id(entity_id):
+                raise ConflictError(f"Entity with id {entity_id} already exists") from e
+            constraint = classify_integrity_error(e)
+            extensions = {"constraint": constraint} if constraint is not None else {}
+            raise ConflictError("Entity violates a database constraint", **extensions) from e
         await self.repo.refresh_many([entity])
         await self.post_save(entity)
         return self._to_output_schema(entity)

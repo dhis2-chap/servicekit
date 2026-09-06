@@ -1,7 +1,7 @@
 """Test configuration and shared fixtures."""
 
 from pydantic import BaseModel
-from sqlalchemy import PickleType
+from sqlalchemy import ForeignKey, PickleType
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 from ulid import ULID
@@ -32,6 +32,16 @@ class _FixtureEntity(Entity):
     description: Mapped[str | None] = mapped_column(nullable=True, default=None)
 
 
+class _FixtureChildEntity(Entity):
+    """Test entity with a foreign key, used to exercise constraint violations."""
+
+    __test__ = False  # Tell pytest not to collect this class
+    __tablename__ = "test_child_entities"
+
+    name: Mapped[str] = mapped_column(nullable=False)
+    parent_id: Mapped[str] = mapped_column(ForeignKey("test_entities.id"), nullable=False)
+
+
 class _FixtureEntityIn(EntityIn):
     """Input schema for test entity."""
 
@@ -48,6 +58,22 @@ class _FixtureEntityOut(EntityOut):
     name: str
     data: DemoData
     description: str | None = None
+
+
+class _FixtureChildEntityIn(EntityIn):
+    """Input schema for the foreign-key test entity."""
+
+    __test__ = False  # Tell pytest not to collect this class
+    name: str
+    parent_id: str
+
+
+class _FixtureChildEntityOut(EntityOut):
+    """Output schema for the foreign-key test entity."""
+
+    __test__ = False  # Tell pytest not to collect this class
+    name: str
+    parent_id: str
 
 
 class _FixtureEntityRepository(BaseRepository[_FixtureEntity, ULID]):
@@ -70,9 +96,34 @@ class _FixtureEntityManager(BaseManager[_FixtureEntity, _FixtureEntityIn, _Fixtu
         super().__init__(repository, _FixtureEntity, _FixtureEntityOut)
 
 
+class _FixtureChildEntityRepository(BaseRepository[_FixtureChildEntity, ULID]):
+    """Repository for foreign-key test entities."""
+
+    __test__ = False  # Tell pytest not to collect this class
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Initialize foreign-key test entity repository."""
+        super().__init__(session, _FixtureChildEntity)
+
+
+class _FixtureChildEntityManager(BaseManager[_FixtureChildEntity, _FixtureChildEntityIn, _FixtureChildEntityOut, ULID]):
+    """Manager for foreign-key test entities."""
+
+    __test__ = False  # Tell pytest not to collect this class
+
+    def __init__(self, repository: _FixtureChildEntityRepository) -> None:
+        """Initialize foreign-key test entity manager."""
+        super().__init__(repository, _FixtureChildEntity, _FixtureChildEntityOut)
+
+
 # Expose without leading underscore for easier test imports
 TestEntity = _FixtureEntity
 TestEntityIn = _FixtureEntityIn
 TestEntityOut = _FixtureEntityOut
 TestEntityRepository = _FixtureEntityRepository
 TestEntityManager = _FixtureEntityManager
+TestChildEntity = _FixtureChildEntity
+TestChildEntityIn = _FixtureChildEntityIn
+TestChildEntityOut = _FixtureChildEntityOut
+TestChildEntityRepository = _FixtureChildEntityRepository
+TestChildEntityManager = _FixtureChildEntityManager

@@ -10,7 +10,7 @@ from pydantic import ValidationError as PydanticValidationError
 from starlette.middleware.base import BaseHTTPMiddleware
 from ulid import ULID
 
-from servicekit.exceptions import ErrorType, ServicekitException
+from servicekit.exceptions import ErrorType, ServicekitException, classify_integrity_error
 from servicekit.logging import add_request_context, get_logger, reset_request_context
 from servicekit.schemas import ProblemDetail
 
@@ -112,6 +112,8 @@ async def database_error_handler(request: Request, exc: Exception) -> JSONRespon
     )
 
     if isinstance(exc, IntegrityError):
+        constraint = classify_integrity_error(exc)
+        constraint_extension: dict[str, Any] = {"constraint": constraint} if constraint is not None else {}
         problem = ProblemDetail(
             type=ErrorType.CONFLICT,
             title="Conflict",
@@ -119,6 +121,7 @@ async def database_error_handler(request: Request, exc: Exception) -> JSONRespon
             detail="The request conflicts with existing data",
             instance=str(request.url),
             trace_id=trace_id,
+            **constraint_extension,
         )
     else:
         problem = ProblemDetail(
