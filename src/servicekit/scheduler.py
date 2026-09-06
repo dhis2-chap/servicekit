@@ -332,7 +332,6 @@ class InMemoryScheduler(Scheduler):
         if still_running:
             await asyncio.gather(*still_running, return_exceptions=True)
 
-
     def _make_record(self, job_id: ULID, submitted_at: datetime) -> JobRecord:
         """Create the record for a newly submitted job; override to use a JobRecord subclass."""
         return JobRecord(id=job_id, status=JobStatus.pending, submitted_at=submitted_at)
