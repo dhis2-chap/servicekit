@@ -32,6 +32,31 @@ jobs:
     - name: Run tests with coverage
       run: make coverage
 
+    - name: Wheel smoke test
+      run: |
+        uv build --wheel --out-dir dist
+        WHEEL="$(ls "$GITHUB_WORKSPACE"/dist/*.whl)"
+        cd "$RUNNER_TEMP"
+        uv run --no-project --isolated --python 3.13 --with "$WHEEL" python - <<'PYTHON'
+        import asyncio
+        import tempfile
+        from pathlib import Path
+
+        from servicekit import SqliteDatabaseBuilder, get_alembic_dir
+
+
+        async def main() -> None:
+            assert get_alembic_dir().is_dir()
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                database = SqliteDatabaseBuilder.from_file(Path(tmp_dir) / "smoke.db").build()
+                await database.init()
+                await database.dispose()
+            print("OK")
+
+
+        asyncio.run(main())
+        PYTHON
+
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v7
       env:

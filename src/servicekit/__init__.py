@@ -11,7 +11,7 @@ except Exception:
     __version__ = "unknown"
 
 # Base infrastructure (framework-agnostic)
-from .database import Database, SqliteDatabase, SqliteDatabaseBuilder
+from .database import Database, SqliteDatabase, SqliteDatabaseBuilder, get_alembic_dir
 from .exceptions import (
     BadRequestError,
     ConflictError,
@@ -47,6 +47,7 @@ __all__ = [
     "Database",
     "SqliteDatabase",
     "SqliteDatabaseBuilder",
+    "get_alembic_dir",
     "Repository",
     "BaseRepository",
     "Manager",

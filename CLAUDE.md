@@ -49,7 +49,8 @@ Every Python file, class, and function/method gets a one-line `"""docstring"""`.
 ## Database & migrations
 
 - `SqliteDatabaseBuilder` for setup. File DBs auto-run Alembic migrations on init; in-memory DBs skip them (fast tests).
-- After changing ORM models: `make migrate MSG='description'`, review in `alembic/versions/`, restart (auto-applies), commit the migration file. Apply manually with `make upgrade`.
+- Migrations ship inside the package at `src/servicekit/alembic/`; `get_alembic_dir()` returns that path. The bundled migration creates only the `alembic_version` table, so applications with their own tables pass `with_migrations(enabled=True, alembic_dir=...)` or `with_migrations(enabled=False)`.
+- After changing ORM models: `make migrate MSG='description'`, review in `src/servicekit/alembic/versions/`, restart (auto-applies), commit the migration file. Apply manually with `make upgrade`.
 
 ## Dependencies
 

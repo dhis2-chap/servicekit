@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 import servicekit.database as database_module
-from servicekit import SqliteDatabase, SqliteDatabaseBuilder
+from servicekit import SqliteDatabase, SqliteDatabaseBuilder, get_alembic_dir
 
 
 def test_install_sqlite_pragmas(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -211,6 +211,8 @@ class TestSqliteDatabase:
         try:
             # Initialize database with file-based URL
             db = SqliteDatabase(f"sqlite+aiosqlite:///{db_path}")
+            assert db.alembic_dir is None, "Default database should use the bundled migrations"
+            assert get_alembic_dir().is_dir(), "Bundled migration directory should ship with the package"
             await db.init()
 
             # Verify that tables were created via Alembic migration
@@ -238,6 +240,45 @@ class TestSqliteDatabase:
 
         finally:
             # Clean up temporary database file
+            if db_path.exists():
+                db_path.unlink()
+
+    async def test_bundled_alembic_dir_contains_migration_environment(self) -> None:
+        """Test that the bundled Alembic directory ships env.py and a versions directory."""
+        alembic_dir = get_alembic_dir()
+
+        assert (alembic_dir / "env.py").is_file(), "Bundled env.py should exist"
+        assert (alembic_dir / "versions").is_dir(), "Bundled versions directory should exist"
+        assert list((alembic_dir / "versions").glob("*.py")), "Bundled versions directory should contain migrations"
+
+    async def test_default_migrations_warn_when_domain_tables_registered(self) -> None:
+        """Test that a warning is logged when bundled migrations run with application tables registered."""
+        from sqlalchemy.orm import Mapped, mapped_column
+        from structlog.testing import capture_logs
+
+        from servicekit.models import Base, Entity
+
+        class _WarningProbeEntity(Entity):
+            """Throwaway entity used to register an application table."""
+
+            __tablename__ = "warning_probe_entities"
+
+            name: Mapped[str] = mapped_column(nullable=False)
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp_file:
+            db_path = Path(tmp_file.name)
+
+        try:
+            db = SqliteDatabase(f"sqlite+aiosqlite:///{db_path}")
+            with capture_logs() as logs:
+                await db.init()
+            await db.dispose()
+
+            events = [entry["event"] for entry in logs]
+            assert "database.default_migrations_no_domain_tables" in events
+        finally:
+            Base.metadata.remove(Base.metadata.tables["warning_probe_entities"])
+            Base.registry._dispose_cls(_WarningProbeEntity)
             if db_path.exists():
                 db_path.unlink()
 
