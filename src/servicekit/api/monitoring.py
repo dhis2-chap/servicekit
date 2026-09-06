@@ -18,6 +18,9 @@ _meter_provider_initialized = False
 _sqlalchemy_instrumented = False
 _process_collector_registered = False
 
+# The single reader attached to the global MeterProvider, shared by every app in the process
+_metric_reader: PrometheusMetricReader | None = None
+
 
 def setup_monitoring(
     app: FastAPI,
@@ -26,7 +29,7 @@ def setup_monitoring(
     enable_traces: bool = False,
 ) -> PrometheusMetricReader:
     """Setup OpenTelemetry with FastAPI and SQLAlchemy auto-instrumentation."""
-    global _meter_provider_initialized, _sqlalchemy_instrumented, _process_collector_registered
+    global _meter_provider_initialized, _sqlalchemy_instrumented, _process_collector_registered, _metric_reader
 
     # Use app title as service name if not provided
     service_name = service_name or app.title
@@ -34,12 +37,13 @@ def setup_monitoring(
     # Create resource with service name
     resource = Resource.create({"service.name": service_name})
 
-    # Setup Prometheus metrics exporter - only once globally
-    reader = PrometheusMetricReader()
-    if not _meter_provider_initialized:
-        provider = MeterProvider(resource=resource, metric_readers=[reader])
+    # Setup Prometheus metrics exporter - only once globally, reusing the attached reader
+    if not _meter_provider_initialized or _metric_reader is None:
+        _metric_reader = PrometheusMetricReader()
+        provider = MeterProvider(resource=resource, metric_readers=[_metric_reader])
         metrics.set_meter_provider(provider)
         _meter_provider_initialized = True
+    reader = _metric_reader
 
     # Register process collector for CPU, memory, and Python runtime metrics
     if not _process_collector_registered:
@@ -82,7 +86,14 @@ def setup_monitoring(
 
 
 def teardown_monitoring() -> None:
-    """Teardown OpenTelemetry instrumentation."""
+    """Teardown OpenTelemetry instrumentation and reset module state."""
+    global _meter_provider_initialized, _sqlalchemy_instrumented, _process_collector_registered, _metric_reader
+
+    _meter_provider_initialized = False
+    _sqlalchemy_instrumented = False
+    _process_collector_registered = False
+    _metric_reader = None
+
     try:
         # Uninstrument FastAPI
         FastAPIInstrumentor().uninstrument()
