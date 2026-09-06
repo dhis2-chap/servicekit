@@ -143,6 +143,10 @@ router = CrudRouter.create(
 )
 ```
 
+`POST` creates only and returns `409 Conflict` for an ID that already exists. `PUT` applies the fields sent: an
+omitted field keeps its value, an explicit `null` clears a nullable field. Collection listings are ordered by ID,
+and pagination is opt-in through `page` (>= 1) and `size` (1-100), which return `422` when out of range.
+
 
 ## Examples
 
