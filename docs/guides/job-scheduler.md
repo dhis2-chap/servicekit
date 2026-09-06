@@ -73,11 +73,12 @@ Response:
 
 Jobs progress through these states:
 
-1. **pending** - Job submitted, waiting to start
+1. **pending** - Job submitted, waiting for a free concurrency slot
 2. **running** - Job is currently executing
 3. **completed** - Job finished successfully
 4. **failed** - Job encountered an error
-5. **canceled** - Job was canceled by user
+5. **canceling** - Cancellation was requested, but synchronous work is still finishing
+6. **canceled** - Job was canceled by user
 
 ### Terminal States
 
@@ -86,7 +87,22 @@ These states indicate the job is finished:
 - `failed` - Error occurred
 - `canceled` - User canceled
 
-SSE streams automatically close when a terminal state is reached.
+SSE streams automatically close when a terminal state is reached. `canceling` is not terminal:
+the stream stays open until the job reaches `canceled`.
+
+### Cancellation
+
+Canceling a job that is still queued moves it straight to `canceled` without ever running it.
+
+Canceling a **coroutine** job interrupts it at its next `await` and it becomes `canceled` immediately.
+
+Canceling a **synchronous** job cannot interrupt the worker thread: Python has no way to stop a
+running thread. The job moves to `canceling`, keeps holding its concurrency slot so no other job
+starts in its place, and becomes `canceled` with `finished_at` set once the thread actually returns.
+Deleting a job in `canceling` removes its record right away, but its thread still runs to completion.
+
+Write long-running synchronous jobs so they check a cancellation flag of their own if they need to
+stop early.
 
 ---
 
@@ -206,10 +222,16 @@ app = (
 ```
 
 **Parameters:**
-- `max_concurrency` (`int | None`): Maximum concurrent jobs. `None` = unlimited.
+- `max_concurrency` (`int | None`): Maximum concurrent jobs. `None` = unlimited. Must be at least 1;
+  `0` or a negative value is rejected.
 - `shutdown_timeout` (`float`): Seconds to let running jobs finish during shutdown before
   they are canceled. Default: 10.0. The scheduler is always drained before the database is
   disposed, and it rejects new jobs once shut down.
+
+The limit can be changed at runtime with `await scheduler.set_max_concurrency(n)`. The new limit
+applies immediately to jobs that are already queued: raising it admits waiting jobs right away, and
+lowering it stops admitting new ones until enough slots free up. It never interrupts jobs that are
+already running, so the active count can temporarily exceed a freshly lowered limit.
 
 ### SSE Poll Interval
 
@@ -222,6 +244,9 @@ curl -N http://localhost:8000/api/v1/jobs/01JQRS.../\$stream
 # Custom: 1.0 second
 curl -N "http://localhost:8000/api/v1/jobs/01JQRS.../\$stream?poll_interval=1.0"
 ```
+
+`poll_interval` must be greater than 0 and at most 60 seconds; anything else returns `422`. The same
+bounds apply to the health stream at `/health/$stream` (default `1.0`).
 
 **Recommendations:**
 - **Development**: 0.5s (default) - good balance
@@ -274,7 +299,7 @@ Response:
 Stream real-time job status updates via Server-Sent Events.
 
 **Query Parameters:**
-- `poll_interval` (float, default: 0.5): Seconds between status checks
+- `poll_interval` (float, default: 0.5, range: `0 < poll_interval <= 60`): Seconds between status checks
 
 **Response Format:**
 ```
@@ -394,6 +419,37 @@ Set `max_concurrency` to prevent resource exhaustion:
 - **CPU-bound jobs**: Set to number of CPU cores
 - **I/O-bound jobs**: Higher limits OK (10-50)
 - **Memory-intensive**: Lower limits to prevent OOM
+
+### Subclassing the Scheduler
+
+Customize `InMemoryScheduler` through its two protected hooks rather than by overriding `add_job`,
+so cancellation and concurrency handling stay in one place:
+
+- `_make_record(job_id, submitted_at) -> JobRecord` builds the record for a newly submitted job.
+  Override it to return a `JobRecord` subclass with extra fields.
+- `async _on_job_result(record, result) -> None` runs after a successful job, on the live record,
+  just before its status becomes `completed`. Anything it writes to the record is therefore visible
+  to any client that observes the `completed` status.
+
+```python
+class TaggedJobRecord(JobRecord):
+    """Job record carrying the artifact a job produced."""
+
+    artifact_id: ULID | None = None
+
+
+class TaggedScheduler(InMemoryScheduler):
+    """Scheduler that records the artifact returned by a job."""
+
+    def _make_record(self, job_id: ULID, submitted_at: datetime) -> JobRecord:
+        """Create a TaggedJobRecord for the job."""
+        return TaggedJobRecord(id=job_id, status=JobStatus.pending, submitted_at=submitted_at)
+
+    async def _on_job_result(self, record: JobRecord, result: Any) -> None:
+        """Store a returned ULID on the record before the job completes."""
+        assert isinstance(record, TaggedJobRecord)
+        record.artifact_id = result if isinstance(result, ULID) else None
+```
 
 ### Load Balancers and Proxies
 
