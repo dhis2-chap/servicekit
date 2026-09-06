@@ -14,7 +14,7 @@ DEFAULT_UNAUTHENTICATED_PATHS = ["/", "/docs", "/redoc", "/openapi.json", "/heal
 def build_app(unauthenticated_paths: list[str] | None) -> FastAPI:
     """Build a service with API key auth and an optional unauthenticated path list."""
     info = ServiceInfo(id="test-service", display_name="Test Service")
-    builder = BaseServiceBuilder(info=info).with_health()
+    builder = BaseServiceBuilder(info=info).with_health(include_database_check=False)
     if unauthenticated_paths is None:
         builder = builder.with_auth(api_keys=["test-key"])
     else:
