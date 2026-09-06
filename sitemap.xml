@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://dhis2-chap.github.io/servicekit/</loc>
+         <lastmod>2026-09-06</lastmod>
+    </url>
+    <url>
+         <loc>https://dhis2-chap.github.io/servicekit/api-reference/</loc>
+         <lastmod>2026-09-06</lastmod>
+    </url>
+    <url>
+         <loc>https://dhis2-chap.github.io/servicekit/guides/app-hosting/</loc>
+         <lastmod>2026-09-06</lastmod>
+    </url>
+    <url>
+         <loc>https://dhis2-chap.github.io/servicekit/guides/authentication/</loc>
+         <lastmod>2026-09-06</lastmod>
+    </url>
+    <url>
+         <loc>https://dhis2-chap.github.io/servicekit/guides/health-checks/</loc>
+         <lastmod>2026-09-06</lastmod>
+    </url>
+    <url>
+         <loc>https://dhis2-chap.github.io/servicekit/guides/job-scheduler/</loc>
+         <lastmod>2026-09-06</lastmod>
+    </url>
+    <url>
+         <loc>https://dhis2-chap.github.io/servicekit/guides/monitoring/</loc>
+         <lastmod>2026-09-06</lastmod>
+    </url>
+    <url>
+         <loc>https://dhis2-chap.github.io/servicekit/guides/registration/</loc>
+         <lastmod>2026-09-06</lastmod>
+    </url>
+</urlset>
