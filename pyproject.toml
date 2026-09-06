@@ -1,6 +1,6 @@
 [project]
 name = "servicekit"
-version = "2.0.1"
+version = "2.0.2"
 description = "Async SQLAlchemy framework with FastAPI integration - reusable foundation for building data services"
 readme = "README.md"
 authors = [{ name = "Morten Hansen", email = "morten@dhis2.org" }]
