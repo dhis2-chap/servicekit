@@ -1,11 +1,17 @@
 """Tests for job scheduler functionality."""
 
 import asyncio
+import gc
+import threading
+import warnings
+from datetime import datetime
 
 import pytest
 import ulid
+from pydantic import ValidationError
 
 from servicekit import InMemoryScheduler, JobStatus
+from servicekit.schemas import JobRecord
 
 ULID = ulid.ULID
 
@@ -399,3 +405,295 @@ class TestSchedulerShutdown:
         scheduler = InMemoryScheduler()
         await scheduler.shutdown()
         await scheduler.shutdown(timeout=0.01)
+
+
+class TestSchedulerCancellation:
+    """Test cancellation semantics for queued, async, and synchronous jobs."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_queued_job_marks_it_canceled(self) -> None:
+        """Test canceling a job queued behind max_concurrency marks it canceled with finished_at."""
+        scheduler = InMemoryScheduler(max_concurrency=1)
+        release_first = asyncio.Event()
+
+        async def blocking_task() -> str:
+            await release_first.wait()
+            return "first"
+
+        async def queued_task() -> str:
+            return "second"
+
+        first_id = await scheduler.add_job(blocking_task)
+        await asyncio.sleep(0.01)
+        queued_id = await scheduler.add_job(queued_task)
+        await asyncio.sleep(0.01)
+
+        assert (await scheduler.get_status(queued_id)) == JobStatus.pending
+
+        was_canceled = await scheduler.cancel(queued_id)
+        assert was_canceled is True
+
+        record = await scheduler.get_record(queued_id)
+        assert record.status == JobStatus.canceled
+        assert record.finished_at is not None
+
+        release_first.set()
+        await scheduler.wait(first_id)
+
+    @pytest.mark.asyncio
+    async def test_cancel_immediately_after_add_job(self) -> None:
+        """Test canceling before the job ran any step still reaches a terminal state."""
+        scheduler = InMemoryScheduler()
+
+        async def never_runs() -> str:
+            return "never"
+
+        job_id = await scheduler.add_job(never_runs)
+        was_canceled = await scheduler.cancel(job_id)
+        assert was_canceled is True
+
+        record = await scheduler.get_record(job_id)
+        assert record.status == JobStatus.canceled
+        assert record.finished_at is not None
+
+    @pytest.mark.asyncio
+    async def test_cancel_before_first_step_closes_coroutine_target(self) -> None:
+        """Test canceling before the runner ever executed closes the coroutine target quietly."""
+        scheduler = InMemoryScheduler()
+
+        async def never_runs() -> str:
+            return "never"
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+
+            coroutine_target = never_runs()
+            job_id = await scheduler.add_job(coroutine_target)
+            assert (await scheduler.cancel(job_id)) is True
+
+            del coroutine_target
+            gc.collect()
+
+        assert [warning for warning in caught if "never awaited" in str(warning.message)] == []
+
+        record = await scheduler.get_record(job_id)
+        assert record.status == JobStatus.canceled
+        assert record.finished_at is not None
+
+    @pytest.mark.asyncio
+    async def test_cancel_queued_coroutine_target_emits_no_warning(self) -> None:
+        """Test a coroutine object canceled while queued is closed instead of warning."""
+        scheduler = InMemoryScheduler(max_concurrency=1)
+        release_first = asyncio.Event()
+
+        async def blocking_task() -> str:
+            await release_first.wait()
+            return "first"
+
+        async def queued_task() -> str:
+            return "second"
+
+        first_id = await scheduler.add_job(blocking_task)
+        await asyncio.sleep(0.01)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+
+            coroutine_target = queued_task()
+            queued_id = await scheduler.add_job(coroutine_target)
+            await asyncio.sleep(0.01)
+            await scheduler.cancel(queued_id)
+
+            del coroutine_target
+            gc.collect()
+
+        assert [warning for warning in caught if "never awaited" in str(warning.message)] == []
+
+        release_first.set()
+        await scheduler.wait(first_id)
+
+    @pytest.mark.asyncio
+    async def test_cancellation_does_not_reach_loop_exception_handler(self) -> None:
+        """Test canceling running and queued jobs never invokes the loop exception handler."""
+        scheduler = InMemoryScheduler(max_concurrency=1)
+        handled: list[dict[str, object]] = []
+
+        loop = asyncio.get_running_loop()
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: handled.append(context))
+
+        try:
+
+            async def long_task() -> str:
+                await asyncio.sleep(10)
+                return "never"
+
+            running_id = await scheduler.add_job(long_task)
+            queued_id = await scheduler.add_job(long_task)
+            await asyncio.sleep(0.01)
+
+            await scheduler.cancel(queued_id)
+            await scheduler.cancel(running_id)
+            await asyncio.sleep(0.01)
+            gc.collect()
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(previous_handler)
+
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_cancel_sync_job_holds_capacity_until_thread_finishes(self) -> None:
+        """Test canceling a blocking sync job reports canceling and keeps its capacity slot."""
+        scheduler = InMemoryScheduler(max_concurrency=1)
+        thread_release = threading.Event()
+        second_started = asyncio.Event()
+
+        def blocking_sync_task() -> str:
+            thread_release.wait(timeout=10)
+            return "first"
+
+        async def second_task() -> str:
+            second_started.set()
+            return "second"
+
+        first_id = await scheduler.add_job(blocking_sync_task)
+        await asyncio.sleep(0.05)
+        assert (await scheduler.get_status(first_id)) == JobStatus.running
+
+        was_canceled = await scheduler.cancel(first_id)
+        assert was_canceled is True
+        assert (await scheduler.get_status(first_id)) == JobStatus.canceling
+
+        second_id = await scheduler.add_job(second_task)
+        await asyncio.sleep(0.05)
+
+        assert not second_started.is_set()
+        assert (await scheduler.get_status(second_id)) == JobStatus.pending
+
+        thread_release.set()
+        await scheduler.wait(second_id)
+
+        first_record = await scheduler.get_record(first_id)
+        assert first_record.status == JobStatus.canceled
+        assert first_record.finished_at is not None
+        assert (await scheduler.get_result(second_id)) == "second"
+
+    @pytest.mark.asyncio
+    async def test_delete_canceling_sync_job_releases_capacity_once(self) -> None:
+        """Test deleting a job whose sync thread is still running frees capacity exactly once."""
+        scheduler = InMemoryScheduler(max_concurrency=1)
+        thread_release = threading.Event()
+
+        def blocking_sync_task() -> str:
+            thread_release.wait(timeout=10)
+            return "first"
+
+        async def follow_up_task() -> str:
+            return "second"
+
+        first_id = await scheduler.add_job(blocking_sync_task)
+        await asyncio.sleep(0.05)
+
+        await scheduler.delete(first_id)
+
+        with pytest.raises(KeyError):
+            await scheduler.get_record(first_id)
+
+        thread_release.set()
+        second_id = await scheduler.add_job(follow_up_task)
+        await scheduler.wait(second_id)
+        assert (await scheduler.get_result(second_id)) == "second"
+
+
+class TestSchedulerCapacityLimit:
+    """Test the resizable concurrency limit."""
+
+    @pytest.mark.asyncio
+    async def test_raising_limit_starts_exactly_one_queued_job(self) -> None:
+        """Test raising the limit from 1 to 2 admits exactly one queued job."""
+        scheduler = InMemoryScheduler(max_concurrency=1)
+        release_all = asyncio.Event()
+        started = 0
+
+        async def tracked_task() -> str:
+            nonlocal started
+            started += 1
+            await release_all.wait()
+            return "done"
+
+        job_ids = [await scheduler.add_job(tracked_task) for _ in range(3)]
+        await asyncio.sleep(0.02)
+        assert started == 1
+
+        await scheduler.set_max_concurrency(2)
+        await asyncio.sleep(0.02)
+        assert started == 2
+
+        await scheduler.set_max_concurrency(1)
+        await asyncio.sleep(0.02)
+        assert started == 2
+
+        release_all.set()
+        await asyncio.gather(*[scheduler.wait(job_id) for job_id in job_ids])
+        assert started == 3
+
+    @pytest.mark.asyncio
+    async def test_set_max_concurrency_rejects_non_positive(self) -> None:
+        """Test set_max_concurrency raises ValueError for zero and negative limits."""
+        scheduler = InMemoryScheduler()
+
+        with pytest.raises(ValueError):
+            await scheduler.set_max_concurrency(0)
+
+        with pytest.raises(ValueError):
+            await scheduler.set_max_concurrency(-1)
+
+        assert scheduler.max_concurrency is None
+
+    def test_constructor_rejects_zero_max_concurrency(self) -> None:
+        """Test constructing a scheduler with max_concurrency=0 fails validation."""
+        with pytest.raises(ValidationError):
+            InMemoryScheduler(max_concurrency=0)
+
+
+class TestSchedulerSubclassHooks:
+    """Test the protected extension hooks for subclasses."""
+
+    @pytest.mark.asyncio
+    async def test_make_record_and_on_job_result_hooks(self) -> None:
+        """Test a subclass can supply its own record type and post-process results."""
+
+        class TaggedJobRecord(JobRecord):
+            """Job record carrying the value a job returned."""
+
+            returned_value: str | None = None
+
+        observed_statuses: list[JobStatus] = []
+
+        class TaggedScheduler(InMemoryScheduler):
+            """Scheduler storing the job result on a custom record type."""
+
+            def _make_record(self, job_id: ULID, submitted_at: datetime) -> JobRecord:
+                """Create a TaggedJobRecord for the job."""
+                return TaggedJobRecord(id=job_id, status=JobStatus.pending, submitted_at=submitted_at)
+
+            async def _on_job_result(self, record: JobRecord, result: object) -> None:
+                """Store the result on the record before its status becomes completed."""
+                assert isinstance(record, TaggedJobRecord)
+                observed_statuses.append(record.status)
+                record.returned_value = str(result)
+
+        scheduler = TaggedScheduler()
+
+        async def task() -> str:
+            return "payload"
+
+        job_id = await scheduler.add_job(task)
+        await scheduler.wait(job_id)
+
+        record = await scheduler.get_record(job_id)
+        assert isinstance(record, TaggedJobRecord)
+        assert record.returned_value == "payload"
+        assert record.status == JobStatus.completed
+        assert observed_statuses == [JobStatus.running]

@@ -186,6 +186,18 @@ class TestHealthRouterSSE:
     and works correctly with real HTTP clients (curl, browsers, etc.).
     """
 
+    @pytest.mark.asyncio
+    async def test_stream_health_rejects_out_of_range_poll_interval(self, app_no_checks: FastAPI) -> None:
+        """Test health stream poll_interval must be within (0, 60]."""
+        async with AsyncClient(
+            transport=ASGITransport(app=app_no_checks), base_url="http://test", follow_redirects=True
+        ) as client:
+            response = await client.get("/health/$stream?poll_interval=0")
+            assert response.status_code == 422
+
+            response = await client.get("/health/$stream?poll_interval=61")
+            assert response.status_code == 422
+
     @pytest.mark.skip(reason="httpx AsyncClient with ASGITransport cannot handle infinite SSE streams properly")
     @pytest.mark.asyncio
     async def test_stream_health_no_checks(self) -> None:

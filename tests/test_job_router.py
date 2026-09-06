@@ -1,6 +1,7 @@
 """Tests for job router endpoints."""
 
 import asyncio
+import json
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -392,6 +393,99 @@ class TestJobRouter:
         # Verify required fields (only id is required, others have defaults)
         assert "required" in job_record_schema
         assert "id" in job_record_schema["required"]
+
+    @pytest.mark.asyncio
+    async def test_stream_job_status_rejects_non_positive_poll_interval(self, client: AsyncClient, app: FastAPI):
+        """Test poll_interval must be greater than zero."""
+        scheduler = app.state.scheduler
+
+        async def quick_task():
+            return "done"
+
+        job_id = await scheduler.add_job(quick_task)
+        await scheduler.wait(job_id)
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/$stream?poll_interval=0")
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_stream_job_status_rejects_oversized_poll_interval(self, client: AsyncClient, app: FastAPI):
+        """Test poll_interval is capped at 60 seconds."""
+        scheduler = app.state.scheduler
+
+        async def quick_task():
+            return "done"
+
+        job_id = await scheduler.add_job(quick_task)
+        await scheduler.wait(job_id)
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/$stream?poll_interval=61")
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_stream_job_status_bounded_read(self, client: AsyncClient, app: FastAPI):
+        """Test a bounded SSE read collects several polled events and stops at the terminal one."""
+        scheduler = app.state.scheduler
+        release_task = asyncio.Event()
+
+        async def long_task():
+            await release_task.wait()
+            return "done"
+
+        async def release_after_delay() -> None:
+            await asyncio.sleep(0.2)
+            release_task.set()
+
+        job_id = await scheduler.add_job(long_task)
+        releaser = asyncio.create_task(release_after_delay())
+
+        statuses: list[str] = []
+        async with client.stream("GET", f"/api/v1/jobs/{job_id}/$stream?poll_interval=0.05") as response:
+            assert response.status_code == 200
+
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    statuses.append(json.loads(line[6:])["status"])
+                    if statuses[-1] == "completed":
+                        break
+
+        await releaser
+        assert len(statuses) >= 3
+        assert statuses[-1] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_stream_terminates_for_job_canceled_while_queued(self, client: AsyncClient, app: FastAPI):
+        """Test the SSE stream reaches a terminal event for a job canceled before it started."""
+        scheduler = app.state.scheduler
+        await scheduler.set_max_concurrency(1)
+        release_first = asyncio.Event()
+
+        async def blocking_task():
+            await release_first.wait()
+            return "first"
+
+        async def queued_task():
+            return "second"
+
+        first_id = await scheduler.add_job(blocking_task)
+        await asyncio.sleep(0.01)
+        queued_id = await scheduler.add_job(queued_task)
+        await asyncio.sleep(0.01)
+
+        assert await scheduler.cancel(queued_id) is True
+
+        statuses: list[str] = []
+        async with client.stream("GET", f"/api/v1/jobs/{queued_id}/$stream?poll_interval=0.05") as response:
+            assert response.status_code == 200
+
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    statuses.append(json.loads(line[6:])["status"])
+
+        assert statuses[-1] == "canceled"
+
+        release_first.set()
+        await scheduler.wait(first_id)
 
 
 class TestJobRouterIntegration:

@@ -159,6 +159,7 @@ class InMemoryScheduler(Scheduler):
     _closed: bool = PrivateAttr(default=False)
     _limiter: _CapacityLimiter = PrivateAttr(default_factory=_CapacityLimiter)
     _deferred_releases: set[ULID] = PrivateAttr(default_factory=set)
+    _pending_targets: dict[ULID, JobTarget] = PrivateAttr(default_factory=dict)
     _background_tasks: set[asyncio.Task[None]] = PrivateAttr(default_factory=set)
 
     def __init__(self, **data: Any):
@@ -195,6 +196,7 @@ class InMemoryScheduler(Scheduler):
             if job_id in self._tasks:
                 raise RuntimeError(f"Job {job_id!r} already scheduled")
             self._records[job_id] = record
+            self._pending_targets[job_id] = target
 
         async def execute_target() -> Any:
             return await self._execute_target(job_id, target, *args, **kwargs)
@@ -289,6 +291,8 @@ class InMemoryScheduler(Scheduler):
         except asyncio.CancelledError:
             pass
 
+        await self._reconcile_canceled_job(job_id)
+
         return True
 
     async def delete(self, job_id: ULID) -> None:
@@ -308,11 +312,14 @@ class InMemoryScheduler(Scheduler):
             except asyncio.CancelledError:
                 pass
 
+            await self._reconcile_canceled_job(job_id)
+
         async with self._lock:
             self._records.pop(job_id, None)
             self._tasks.pop(job_id, None)
             self._results.pop(job_id, None)
             self._deferred_releases.discard(job_id)
+            self._pending_targets.pop(job_id, None)
 
     async def shutdown(self, *, timeout: float | None = None) -> None:
         """Stop accepting new jobs, drain running jobs up to timeout, then cancel the rest."""
@@ -346,6 +353,9 @@ class InMemoryScheduler(Scheduler):
 
     async def _runner(self, job_id: ULID, target: JobTarget, execute_target: JobExecutor) -> Any:
         """Acquire a capacity slot and run the job, handling cancellation that arrives while queued."""
+        async with self._lock:
+            self._pending_targets.pop(job_id, None)
+
         try:
             await self._limiter.acquire()
         except asyncio.CancelledError:
@@ -363,6 +373,21 @@ class InMemoryScheduler(Scheduler):
             raise
 
         return await self._run_with_state(job_id, execute_target)
+
+    async def _reconcile_canceled_job(self, job_id: ULID) -> None:
+        """Finish a job whose task was canceled before its runner ever got to execute a single step."""
+        async with self._lock:
+            target = self._pending_targets.pop(job_id, None)
+            record = self._records.get(job_id)
+            needs_transition = record is not None and record.status in (JobStatus.pending, JobStatus.running)
+
+            if needs_transition and record is not None and job_id not in self._deferred_releases:
+                record.status = JobStatus.canceled
+                record.finished_at = datetime.now(timezone.utc)
+
+        # The target never ran; close an unstarted coroutine to avoid a "never awaited" warning.
+        if inspect.iscoroutine(target):
+            target.close()
 
     async def _run_with_state(
         self,
