@@ -473,7 +473,7 @@ class BaseServiceBuilder:
 
         # Mount apps AFTER all routes (apps act as catch-all for unmatched paths)
         if self._app_configs:
-            from fastapi.staticfiles import StaticFiles
+            from .app import EntryStaticFiles
 
             # Collect all router prefixes to exclude from redirect middleware
             # This ensures routes take precedence over app mounts
@@ -502,7 +502,9 @@ class BaseServiceBuilder:
 
             # Mount all apps
             for app_config in self._app_configs:
-                static_files = StaticFiles(directory=str(app_config.directory), html=True)
+                static_files = EntryStaticFiles(
+                    directory=str(app_config.directory), entry=app_config.manifest.entry, html=True
+                )
                 app.mount(app_config.prefix, static_files, name=f"app_{app_config.manifest.name}")
                 logger.info(
                     "app.mounted",

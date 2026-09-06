@@ -1,6 +1,6 @@
 """FastAPI framework layer - routers, middleware, utilities."""
 
-from .app import App, AppInfo, AppLoader, AppManager, AppManifest
+from .app import App, AppInfo, AppLoader, AppManager, AppManifest, EntryStaticFiles
 from .auth import APIKeyMiddleware, load_api_keys_from_env, load_api_keys_from_file, validate_api_key_format
 from .crud import CrudPermissions, CrudRouter
 from .dependencies import (
@@ -34,6 +34,7 @@ __all__ = [
     "AppLoader",
     "AppManifest",
     "AppManager",
+    "EntryStaticFiles",
     # Authentication
     "APIKeyMiddleware",
     "load_api_keys_from_env",

@@ -6,8 +6,12 @@ import importlib.util
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from starlette.responses import Response
+from starlette.staticfiles import StaticFiles
+from starlette.types import Scope
 
 from servicekit.logging import get_logger
 
@@ -61,6 +65,21 @@ class App:
     directory: Path
     prefix: str  # May differ from manifest if overridden
     is_package: bool  # True if loaded from package resources
+
+
+class EntryStaticFiles(StaticFiles):
+    """Static file server that serves an app's configured entry file at the mount root."""
+
+    def __init__(self, *args: Any, entry: str = "index.html", **kwargs: Any) -> None:
+        """Initialize static files with the entry filename served for the mount root."""
+        super().__init__(*args, **kwargs)
+        self.entry = entry
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        """Serve the configured entry file for the mount root, other paths unchanged."""
+        if path in ("", "."):
+            return await super().get_response(self.entry, scope)
+        return await super().get_response(path, scope)
 
 
 class AppLoader:

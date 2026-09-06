@@ -72,7 +72,7 @@ my-app/
 **Optional fields:**
 - **description** (`string`): Brief description of the app
 - **author** (`string`): Author name or organization
-- **entry** (`string`): Entry point filename. Default: `"index.html"`
+- **entry** (`string`): Entry point filename served at the mount root. Default: `"index.html"`
 
 ---
 
