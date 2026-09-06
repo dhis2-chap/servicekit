@@ -1,8 +1,10 @@
+import pytest
 from ulid import ULID
 
 from servicekit import SqliteDatabaseBuilder
+from servicekit.exceptions import ConflictError
 
-from .conftest import DemoData, TestEntityIn, TestEntityManager, TestEntityOut, TestEntityRepository
+from .conftest import DemoData, TestEntity, TestEntityIn, TestEntityManager, TestEntityOut, TestEntityRepository
 
 
 class TestBaseManager:
@@ -443,5 +445,256 @@ class TestBaseManager:
             assert result.created_at is not None
             assert result.updated_at is not None
             assert result.id is not None
+
+        await db.dispose()
+
+    async def test_create_rejects_existing_id(self) -> None:
+        """Test that create() refuses to overwrite an existing entity."""
+        db = SqliteDatabaseBuilder.in_memory().build()
+        await db.init()
+
+        async with db.session() as session:
+            repo = TestEntityRepository(session)
+            manager = TestEntityManager(repo)
+
+            explicit_id = ULID()
+            await manager.create(TestEntityIn(id=explicit_id, name="original", data=DemoData(x=1, y=1, z=1, tags=[])))
+
+            with pytest.raises(ConflictError):
+                await manager.create(
+                    TestEntityIn(id=explicit_id, name="replacement", data=DemoData(x=2, y=2, z=2, tags=[]))
+                )
+
+            stored = await manager.find_by_id(explicit_id)
+            assert stored is not None
+            assert stored.name == "original"
+            assert await manager.count() == 1
+
+        await db.dispose()
+
+    async def test_create_maps_integrity_error_to_conflict(self) -> None:
+        """Test that a concurrent duplicate insert surfaces as ConflictError."""
+
+        class BlindRepository(TestEntityRepository):
+            """Repository that never reports an existing entity."""
+
+            async def exists_by_id(self, id: ULID) -> bool:
+                """Pretend no entity exists to reach the persistence boundary."""
+                return False
+
+        db = SqliteDatabaseBuilder.in_memory().build()
+        await db.init()
+
+        explicit_id = ULID()
+
+        async with db.session() as session:
+            manager = TestEntityManager(TestEntityRepository(session))
+            await manager.create(TestEntityIn(id=explicit_id, name="first", data=DemoData(x=1, y=1, z=1, tags=[])))
+
+        async with db.session() as session:
+            manager = TestEntityManager(BlindRepository(session))
+
+            with pytest.raises(ConflictError):
+                await manager.create(TestEntityIn(id=explicit_id, name="second", data=DemoData(x=2, y=2, z=2, tags=[])))
+
+            assert await manager.count() == 1
+
+        await db.dispose()
+
+    async def test_save_still_upserts(self) -> None:
+        """Test that save() keeps upsert semantics for an existing ID."""
+        db = SqliteDatabaseBuilder.in_memory().build()
+        await db.init()
+
+        async with db.session() as session:
+            repo = TestEntityRepository(session)
+            manager = TestEntityManager(repo)
+
+            explicit_id = ULID()
+            await manager.save(TestEntityIn(id=explicit_id, name="original", data=DemoData(x=1, y=1, z=1, tags=[])))
+            updated = await manager.save(
+                TestEntityIn(id=explicit_id, name="updated", data=DemoData(x=2, y=2, z=2, tags=[]))
+            )
+
+            assert updated.id == explicit_id
+            assert updated.name == "updated"
+            assert await manager.count() == 1
+
+        await db.dispose()
+
+    async def test_save_with_explicit_null_clears_field(self) -> None:
+        """Test that an explicit null clears a nullable field on update."""
+        db = SqliteDatabaseBuilder.in_memory().build()
+        await db.init()
+
+        async with db.session() as session:
+            repo = TestEntityRepository(session)
+            manager = TestEntityManager(repo)
+
+            saved = await manager.save(
+                TestEntityIn(name="entity", description="present", data=DemoData(x=1, y=1, z=1, tags=[]))
+            )
+            assert saved.description == "present"
+
+            cleared = await manager.save(
+                TestEntityIn(id=saved.id, name="entity", description=None, data=DemoData(x=1, y=1, z=1, tags=[]))
+            )
+
+            assert cleared.description is None
+
+        await db.dispose()
+
+    async def test_save_without_field_keeps_value(self) -> None:
+        """Test that an omitted field is left untouched on update."""
+        db = SqliteDatabaseBuilder.in_memory().build()
+        await db.init()
+
+        async with db.session() as session:
+            repo = TestEntityRepository(session)
+            manager = TestEntityManager(repo)
+
+            saved = await manager.save(
+                TestEntityIn(name="entity", description="present", data=DemoData(x=1, y=1, z=1, tags=[]))
+            )
+
+            updated = await manager.save(
+                TestEntityIn(id=saved.id, name="renamed", data=DemoData(x=1, y=1, z=1, tags=[]))
+            )
+
+            assert updated.name == "renamed"
+            assert updated.description == "present"
+
+        await db.dispose()
+
+    async def test_save_all_with_explicit_null_clears_field(self) -> None:
+        """Test that save_all applies an explicit null to a nullable field."""
+        db = SqliteDatabaseBuilder.in_memory().build()
+        await db.init()
+
+        async with db.session() as session:
+            repo = TestEntityRepository(session)
+            manager = TestEntityManager(repo)
+
+            saved = await manager.save(
+                TestEntityIn(name="entity", description="present", data=DemoData(x=1, y=1, z=1, tags=[]))
+            )
+
+            results = await manager.save_all(
+                [
+                    TestEntityIn(id=saved.id, name="entity", description=None, data=DemoData(x=1, y=1, z=1, tags=[])),
+                ]
+            )
+
+            assert results[0].description is None
+
+        await db.dispose()
+
+    async def test_save_all_without_field_keeps_value(self) -> None:
+        """Test that save_all leaves omitted fields untouched."""
+        db = SqliteDatabaseBuilder.in_memory().build()
+        await db.init()
+
+        async with db.session() as session:
+            repo = TestEntityRepository(session)
+            manager = TestEntityManager(repo)
+
+            saved = await manager.save(
+                TestEntityIn(name="entity", description="present", data=DemoData(x=1, y=1, z=1, tags=[]))
+            )
+
+            results = await manager.save_all(
+                [TestEntityIn(id=saved.id, name="renamed", data=DemoData(x=1, y=1, z=1, tags=[]))]
+            )
+
+            assert results[0].name == "renamed"
+            assert results[0].description == "present"
+
+        await db.dispose()
+
+    async def test_save_all_hooks_see_earlier_entities(self) -> None:
+        """Test that a pre_save hook can query entities inserted earlier in the same batch."""
+
+        class RecordingManager(TestEntityManager):
+            """Manager whose pre_save hook looks up the previously inserted entity."""
+
+            def __init__(self, repository: TestEntityRepository) -> None:
+                """Initialize the manager with an empty lookup record."""
+                super().__init__(repository)
+                self.previous_id: ULID | None = None
+                self.found_previous: list[bool] = []
+
+            async def pre_save(self, entity: TestEntity, data: TestEntityIn) -> None:
+                """Record whether the previous batch entity is already visible."""
+                if self.previous_id is not None:
+                    self.found_previous.append(await self.repo.find_by_id(self.previous_id) is not None)
+                self.previous_id = entity.id
+
+        db = SqliteDatabaseBuilder.in_memory().build()
+        await db.init()
+
+        async with db.session() as session:
+            manager = RecordingManager(TestEntityRepository(session))
+
+            await manager.save_all(
+                [TestEntityIn(id=ULID(), name=f"entity{i}", data=DemoData(x=i, y=i, z=i, tags=[])) for i in range(3)]
+            )
+
+            assert manager.found_previous == [True, True]
+
+        await db.dispose()
+
+    async def test_save_all_with_duplicate_id_keeps_last_values(self) -> None:
+        """Test that a batch containing the same ID twice ends with one row holding the later values."""
+        db = SqliteDatabaseBuilder.in_memory().build()
+        await db.init()
+
+        async with db.session() as session:
+            repo = TestEntityRepository(session)
+            manager = TestEntityManager(repo)
+
+            explicit_id = ULID()
+            results = await manager.save_all(
+                [
+                    TestEntityIn(id=explicit_id, name="first", data=DemoData(x=1, y=1, z=1, tags=[])),
+                    TestEntityIn(id=explicit_id, name="second", data=DemoData(x=2, y=2, z=2, tags=[])),
+                ]
+            )
+
+            assert await manager.count() == 1
+            assert results[-1].name == "second"
+            stored = await manager.find_by_id(explicit_id)
+            assert stored is not None
+            assert stored.name == "second"
+
+        await db.dispose()
+
+    async def test_save_all_rolls_back_when_an_item_fails(self) -> None:
+        """Test that a failure on the last item leaves no rows from the batch."""
+
+        class FailingManager(TestEntityManager):
+            """Manager whose pre_save hook rejects a specific entity."""
+
+            async def pre_save(self, entity: TestEntity, data: TestEntityIn) -> None:
+                """Reject the entity named 'boom'."""
+                if entity.name == "boom":
+                    raise RuntimeError("hook failure")
+
+        db = SqliteDatabaseBuilder.in_memory().build()
+        await db.init()
+
+        async with db.session() as session:
+            manager = FailingManager(TestEntityRepository(session))
+
+            with pytest.raises(RuntimeError):
+                await manager.save_all(
+                    [
+                        TestEntityIn(name="ok", data=DemoData(x=1, y=1, z=1, tags=[])),
+                        TestEntityIn(name="boom", data=DemoData(x=2, y=2, z=2, tags=[])),
+                    ]
+                )
+
+        async with db.session() as session:
+            verification_manager = TestEntityManager(TestEntityRepository(session))
+            assert await verification_manager.count() == 0
 
         await db.dispose()
