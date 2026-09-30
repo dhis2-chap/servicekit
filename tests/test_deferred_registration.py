@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 
+from servicekit.api.monitoring import teardown_monitoring
 from servicekit.api.service_builder import (
     _READINESS_TOKEN_HEADER,
     BaseServiceBuilder,
@@ -205,6 +206,38 @@ async def test_readiness_probe_passes_middleware_added_after_build():
         )
 
     assert result == 8000
+
+
+def _middleware_layers(app: Any) -> list[str]:
+    """List middleware class names of a built ASGI stack from the outermost layer inward."""
+    names: list[str] = []
+    while app is not None and len(names) < 20:
+        names.append(type(app).__name__)
+        app = getattr(app, "app", None)
+    return names
+
+
+@pytest.mark.asyncio
+async def test_readiness_token_keeps_monitoring_instrumentation():
+    """Registration with monitoring keeps OpenTelemetry HTTP instrumentation and still tags probes."""
+    teardown_monitoring()
+    try:
+        app = (
+            BaseServiceBuilder(info=ServiceInfo(id="test-svc", display_name="Test"))
+            .with_monitoring()
+            .with_registration(orchestrator_url="http://orchestrator:9000/services/$register")
+            .build()
+        )
+        layers = _middleware_layers(app.build_middleware_stack())
+        assert layers[0] == "_ReadinessTokenMiddleware"
+        assert "OpenTelemetryMiddleware" in layers
+
+        token = app.state.readiness_token
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/v1/info", headers={_READINESS_TOKEN_HEADER: token})
+        assert response.headers[_READINESS_TOKEN_HEADER] == token
+    finally:
+        teardown_monitoring()
 
 
 def test_readiness_token_only_installed_with_registration():

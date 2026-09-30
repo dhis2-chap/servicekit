@@ -432,10 +432,6 @@ class BaseServiceBuilder:
         # Override schema generation to clean up generic type names
         app.openapi = self._create_openapi_customizer(app)  # type: ignore[method-assign]
 
-        if self._registration_options is not None:
-            app.state.readiness_token = secrets.token_hex(16)
-            app.build_middleware_stack = _wrap_with_readiness_token(app)  # type: ignore[method-assign]
-
         if self._include_error_handlers:
             add_error_handlers(app)
 
@@ -555,6 +551,12 @@ class BaseServiceBuilder:
 
         for dependency, override in self._dependency_overrides.items():
             app.dependency_overrides[dependency] = override
+
+        # Last, so it wraps any build_middleware_stack patch made above (OpenTelemetry instrumentation
+        # expects the stack it builds to start with ServerErrorMiddleware)
+        if self._registration_options is not None:
+            app.state.readiness_token = secrets.token_hex(16)
+            app.build_middleware_stack = _wrap_with_readiness_token(app)  # type: ignore[method-assign]
 
         return app
 
