@@ -11,6 +11,13 @@ from starlette.requests import Request
 from servicekit.api.utilities import build_location_url, run_app
 
 
+@pytest.fixture(autouse=True)
+def _isolate_port_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restore PORT and SERVICEKIT_PORT after each test, since run_app exports them."""
+    monkeypatch.delenv("PORT", raising=False)
+    monkeypatch.delenv("SERVICEKIT_PORT", raising=False)
+
+
 def test_build_location_url() -> None:
     """Test build_location_url constructs full URLs correctly."""
     app = FastAPI()
@@ -195,6 +202,22 @@ def test_run_app_respects_existing_servicekit_port(monkeypatch: pytest.MonkeyPat
             run_app("test:app", port=9090)
 
     assert os.environ["SERVICEKIT_PORT"] == "443"
+
+
+def test_run_app_exports_bind_port_as_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test run_app exports an explicit bind port as PORT, overriding the environment value."""
+    monkeypatch.setenv("PORT", "8000")
+    monkeypatch.setenv("SERVICEKIT_PORT", "18701")
+
+    mock_run = Mock()
+    mock_configure = Mock()
+
+    with patch("uvicorn.run", mock_run):
+        with patch("servicekit.logging.configure_logging", mock_configure):
+            run_app("test:app", port=9090)
+
+    assert os.environ["PORT"] == "9090"
+    assert os.environ["SERVICEKIT_PORT"] == "18701"
 
 
 def test_run_app_multiple_workers_disables_reload() -> None:

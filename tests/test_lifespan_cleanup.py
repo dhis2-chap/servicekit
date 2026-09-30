@@ -202,7 +202,7 @@ async def test_registration_failure_raises_sigterm_and_still_cleans_up() -> None
     app = _registration_builder(fail_on_error=True).on_startup(spy_hook).on_shutdown(shutdown_hook).build()
 
     with (
-        patch("servicekit.api.service_builder._wait_until_ready", new_callable=AsyncMock, return_value=True),
+        patch("servicekit.api.service_builder._wait_until_ready", new_callable=AsyncMock, return_value=9999),
         patch(
             "servicekit.api.service_builder._register_and_start_keepalive",
             new_callable=AsyncMock,
@@ -224,7 +224,7 @@ async def test_readiness_timeout_raises_sigterm_when_fail_on_error() -> None:
     app = _registration_builder(fail_on_error=True).build()
 
     with (
-        patch("servicekit.api.service_builder._wait_until_ready", new_callable=AsyncMock, return_value=False),
+        patch("servicekit.api.service_builder._wait_until_ready", new_callable=AsyncMock, return_value=None),
         patch("signal.raise_signal") as mock_signal,
     ):
         async with app.router.lifespan_context(app):
@@ -239,7 +239,7 @@ async def test_readiness_timeout_is_tolerated_when_not_fail_on_error() -> None:
     app = _registration_builder(fail_on_error=False).build()
 
     with (
-        patch("servicekit.api.service_builder._wait_until_ready", new_callable=AsyncMock, return_value=False),
+        patch("servicekit.api.service_builder._wait_until_ready", new_callable=AsyncMock, return_value=None),
         patch("signal.raise_signal") as mock_signal,
     ):
         async with app.router.lifespan_context(app):
@@ -259,7 +259,7 @@ async def test_registration_failure_without_fail_on_error_does_not_signal() -> N
     app = _registration_builder(fail_on_error=False).build()
 
     with (
-        patch("servicekit.api.service_builder._wait_until_ready", new_callable=AsyncMock, return_value=True),
+        patch("servicekit.api.service_builder._wait_until_ready", new_callable=AsyncMock, return_value=9999),
         patch(
             "servicekit.api.service_builder._register_and_start_keepalive",
             new_callable=AsyncMock,
@@ -280,7 +280,7 @@ async def test_registration_health_check_reports_unhealthy_after_failure() -> No
     app = _registration_builder(fail_on_error=True).build()
 
     with (
-        patch("servicekit.api.service_builder._wait_until_ready", new_callable=AsyncMock, return_value=True),
+        patch("servicekit.api.service_builder._wait_until_ready", new_callable=AsyncMock, return_value=9999),
         patch(
             "servicekit.api.service_builder._register_and_start_keepalive",
             new_callable=AsyncMock,
