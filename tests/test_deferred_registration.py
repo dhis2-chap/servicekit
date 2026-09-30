@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 from fastapi import FastAPI
+from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 
 from servicekit.api.service_builder import (
     _READINESS_TOKEN_HEADER,
@@ -185,6 +186,25 @@ async def test_readiness_token_middleware_echoes_token_through_auth():
     assert probed.headers[_READINESS_TOKEN_HEADER] == token
     assert _READINESS_TOKEN_HEADER not in wrong.headers
     assert _READINESS_TOKEN_HEADER not in plain.headers
+
+
+@pytest.mark.asyncio
+async def test_readiness_probe_passes_middleware_added_after_build():
+    """Middleware added after build() that answers early (HTTPS redirect) still returns the token."""
+    app = (
+        BaseServiceBuilder(info=ServiceInfo(id="test-svc", display_name="Test"))
+        .with_registration(orchestrator_url="http://orchestrator:9000/services/$register")
+        .build()
+    )
+    app.add_middleware(HTTPSRedirectMiddleware)
+    real_client = httpx.AsyncClient
+
+    with patch("httpx.AsyncClient", lambda: real_client(transport=httpx.ASGITransport(app=app))):
+        result = await _wait_until_ready(
+            [8000], token=app.state.readiness_token, health_path=None, poll_interval=0.05, timeout=1.0
+        )
+
+    assert result == 8000
 
 
 def test_readiness_token_only_installed_with_registration():

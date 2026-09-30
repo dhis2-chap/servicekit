@@ -432,6 +432,10 @@ class BaseServiceBuilder:
         # Override schema generation to clean up generic type names
         app.openapi = self._create_openapi_customizer(app)  # type: ignore[method-assign]
 
+        if self._registration_options is not None:
+            app.state.readiness_token = secrets.token_hex(16)
+            app.build_middleware_stack = _wrap_with_readiness_token(app)  # type: ignore[method-assign]
+
         if self._include_error_handlers:
             add_error_handlers(app)
 
@@ -448,11 +452,6 @@ class BaseServiceBuilder:
             # Store auth_source for logging during startup
             app.state.auth_source = self._auth_options.source
             app.state.auth_key_count = len(self._auth_options.api_keys)
-
-        if self._registration_options is not None:
-            # Added after auth so it wraps it and can mark even rejected probe responses as ours
-            app.state.readiness_token = secrets.token_hex(16)
-            app.add_middleware(_ReadinessTokenMiddleware, token=app.state.readiness_token)
 
         if self._health_options:
             health_checks: dict[str, HealthCheck] = dict(self._health_options.checks)
@@ -933,6 +932,17 @@ class _ReadinessTokenMiddleware:
         """Return whether the request carries this instance's readiness token."""
         expected = (_READINESS_TOKEN_HEADER.encode("latin-1"), self.token.encode("latin-1"))
         return any((name.lower(), value) == expected for name, value in scope.get("headers", []))
+
+
+def _wrap_with_readiness_token(app: FastAPI) -> Callable[[], ASGIApp]:
+    """Wrap the app's middleware stack builder so readiness token tagging is always the outermost layer."""
+    build_middleware_stack = app.build_middleware_stack
+
+    def build_with_readiness_token() -> ASGIApp:
+        """Build the regular stack, including middleware added after build(), inside the token middleware."""
+        return _ReadinessTokenMiddleware(build_middleware_stack(), token=app.state.readiness_token)
+
+    return build_with_readiness_token
 
 
 def _parse_port(value: str | None) -> int | None:
