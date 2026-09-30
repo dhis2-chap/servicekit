@@ -97,6 +97,8 @@ The `.with_registration()` method accepts these parameters:
     auto_deregister=True,               # Automatically deregister on shutdown
     service_key=None,                   # Service key for authentication
     service_key_env="SERVICEKIT_REGISTRATION_KEY",  # Env var for service key
+    local_port=None,                    # Port the app binds locally (readiness probe)
+    local_port_env="PORT",              # Env var for the local bind port
 )
 ```
 
@@ -126,7 +128,7 @@ ServiceInfo(id="my_service", display_name="My Service")  # underscore
 
 - **orchestrator_url** (`str | None`): Orchestrator registration endpoint URL. If None, reads from environment variable.
 - **host** (`str | None`): Service hostname. If None, auto-detects via `socket.gethostname()` or reads from environment variable.
-- **port** (`int | None`): Service port. If None, reads from environment variable or defaults to 8000.
+- **port** (`int | None`): Port advertised to the orchestrator. If None, reads from environment variable or defaults to 8000.
 - **orchestrator_url_env** (`str`): Environment variable name for orchestrator URL. Default: `SERVICEKIT_ORCHESTRATOR_URL`.
 - **host_env** (`str`): Environment variable name for hostname override. Default: `SERVICEKIT_HOST`.
 - **port_env** (`str`): Environment variable name for port override. Default: `SERVICEKIT_PORT`.
@@ -138,6 +140,8 @@ ServiceInfo(id="my_service", display_name="My Service")  # underscore
 - **keepalive_interval** (`float`): Seconds between keepalive pings. Default: 10.0.
 - **auto_deregister** (`bool`): Automatically deregister service on shutdown. Default: True.
 - **service_key** (`str | None`): Service key for authentication. If provided, sent as `X-Service-Key` header. Default: None.
+- **local_port** (`int | None`): Port the app binds locally, probed by the readiness gate. Only needed when it differs from the advertised port and is neither in `PORT` nor 8000. Default: None.
+- **local_port_env** (`str`): Environment variable name for the local bind port. Default: `PORT` (exported by `run_app`).
 - **service_key_env** (`str`): Environment variable name for service key. Default: `SERVICEKIT_REGISTRATION_KEY`.
 
 ---
@@ -158,8 +162,9 @@ ServiceInfo(id="my_service", display_name="My Service")  # underscore
 10. **Shutdown**: On graceful shutdown, stops keepalive and optionally deregisters
 11. **Logging**: Logs all registration, ping, and deregistration events
 
-**Readiness gate**: before registering, the service polls its own health endpoint and waits for a 200 response.
-Because `/health` now returns 503 while any health check is unhealthy, a service whose database (or other check)
+**Readiness gate**: before registering, the service polls its own health endpoint on `127.0.0.1` and waits for a 200
+response. It probes the local bind port, which may differ from the advertised port (see [Port Resolution](#port-resolution)),
+and only accepts responses from its own app instance, so another server on a probed port is never mistaken for it. Because `/health` now returns 503 while any health check is unhealthy, a service whose database (or other check)
 is down waits instead of registering as available. See the [health checks guide](health-checks.md) for the status
 code semantics.
 
@@ -274,13 +279,26 @@ Priority order:
 
 ### Port Resolution
 
-Priority order:
+Two ports are involved, and they differ whenever a container port is published under another host port or the service
+sits behind a proxy.
+
+**Advertised port** (the port in the URL sent to the orchestrator), in priority order:
 
 1. **Direct Parameter**: `port=8080` in `.with_registration()`
 2. **Environment Variable**: Value of `SERVICEKIT_PORT` (or custom env var)
 3. **Default**: 8000
 
-**Important**: `SERVICEKIT_PORT` should match the container's **internal port**, not the host-mapped port.
+Set it to the port the **orchestrator** uses to reach the service: the container port when both share a Docker network,
+the published host port when the orchestrator runs on the host (e.g. `host.docker.internal:18701` for `-p 18701:8000`).
+
+**Local port** (the port the readiness gate probes on `127.0.0.1`):
+
+1. **Direct Parameter**: `local_port=8000` in `.with_registration()`, used exclusively when set
+2. Otherwise each of these is tried in turn until the app answers: `PORT` (or `local_port_env`), the advertised port, 8000
+
+`run_app` exports the port uvicorn binds as `PORT`, so services started through it are always probed on the right port.
+Services started with their own `uvicorn --port N` command are found as long as `N` is the advertised port or 8000;
+otherwise set `PORT=N` or `local_port=N`.
 
 ---
 
@@ -438,6 +456,19 @@ services:
 ```
 
 **Why**: Other services connect using the internal Docker network, so they use the container port (8000), not the host-mapped port (8001).
+
+When the orchestrator runs on the Docker host instead, advertise the published host port:
+
+```bash
+docker run -p 18701:8000 \
+  -e SERVICEKIT_ORCHESTRATOR_URL='http://host.docker.internal:8000/v2/services/$register' \
+  -e SERVICEKIT_HOST=host.docker.internal \
+  -e SERVICEKIT_PORT=18701 \
+  --add-host host.docker.internal:host-gateway \
+  my-service:latest
+```
+
+The readiness gate still probes the app on its container port (8000) before registering `host.docker.internal:18701`.
 
 ### Multiple Services
 
@@ -662,23 +693,26 @@ docker compose exec my-service python -c "import socket; print(socket.gethostnam
 
 **Problem**: Orchestrator cannot reach service at registered URL
 
-**Common mistake**: Using host-mapped port instead of container port
+**Common mistake**: Advertising a port the orchestrator cannot use. `SERVICEKIT_PORT` must be the port as seen from
+the orchestrator.
 
 ```yaml
-# WRONG
+# Orchestrator on the same Docker network: advertise the container port
 ports:
   - "8001:8000"
 environment:
-  SERVICEKIT_PORT: "8001"  # ❌ Host port
+  SERVICEKIT_PORT: "8000"
 
-# CORRECT
+# Orchestrator on the Docker host: advertise the published host port
 ports:
   - "8001:8000"
 environment:
-  SERVICEKIT_PORT: "8000"  # ✅ Container port
+  SERVICEKIT_HOST: host.docker.internal
+  SERVICEKIT_PORT: "8001"
 ```
 
-**Why**: Services communicate via Docker's internal network using container ports, not host-mapped ports.
+**Readiness timeout** (`registration.readiness_timeout` listing the probed `ports`): the app answers on none of them.
+Set `PORT` or `local_port` to the port the app binds.
 
 ### Orchestrator URL Missing
 

@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import secrets
 import signal
 import sys
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +17,7 @@ from typing import Any, AsyncContextManager, AsyncGenerator, Awaitable, Callable
 from fastapi import APIRouter, FastAPI
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import text
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from servicekit import Database, SqliteDatabase
 from servicekit.logging import configure_logging, get_logger
@@ -33,6 +36,10 @@ logger = get_logger(__name__)
 type LifecycleHook = Callable[[FastAPI], Awaitable[None]]
 type DependencyOverride = Callable[..., object]
 type LifespanFactory = Callable[[FastAPI], AsyncContextManager[None]]
+
+# Header the readiness probe sends and expects echoed back, so it only accepts its own app
+_READINESS_TOKEN_HEADER = "x-servicekit-readiness-token"
+_DEFAULT_LOCAL_PORT = 8000
 
 
 @dataclass(frozen=True)
@@ -107,6 +114,8 @@ class _RegistrationOptions:
     service_key: str | None
     service_key_env: str
     re_register_grace_period: float
+    local_port: int | None = None
+    local_port_env: str = "PORT"
 
 
 class ServiceInfo(BaseModel):
@@ -341,8 +350,15 @@ class BaseServiceBuilder:
         service_key: str | None = None,
         service_key_env: str = "SERVICEKIT_REGISTRATION_KEY",
         re_register_grace_period: float = 30.0,
+        local_port: int | None = None,
+        local_port_env: str = "PORT",
     ) -> Self:
-        """Enable service registration with orchestrator for service discovery."""
+        """Enable service registration with orchestrator for service discovery.
+
+        ``host``/``port`` (or ``host_env``/``port_env``) form the address advertised to the orchestrator.
+        ``local_port`` (or ``local_port_env``) is the port the app binds locally, probed for readiness
+        before registering; set it when the advertised port differs from the bind port.
+        """
         self._registration_options = _RegistrationOptions(
             orchestrator_url=orchestrator_url,
             host=host,
@@ -360,6 +376,8 @@ class BaseServiceBuilder:
             service_key=service_key,
             service_key_env=service_key_env,
             re_register_grace_period=re_register_grace_period,
+            local_port=local_port,
+            local_port_env=local_port_env,
         )
         return self
 
@@ -430,6 +448,11 @@ class BaseServiceBuilder:
             # Store auth_source for logging during startup
             app.state.auth_source = self._auth_options.source
             app.state.auth_key_count = len(self._auth_options.api_keys)
+
+        if self._registration_options is not None:
+            # Added after auth so it wraps it and can mark even rejected probe responses as ours
+            app.state.readiness_token = secrets.token_hex(16)
+            app.add_middleware(_ReadinessTokenMiddleware, token=app.state.readiness_token)
 
         if self._health_options:
             health_checks: dict[str, HealthCheck] = dict(self._health_options.checks)
@@ -882,49 +905,88 @@ class BaseServiceBuilder:
         return cls(info=info, **kwargs).build()
 
 
-def _resolve_port(options: _RegistrationOptions) -> int:
-    """Resolve port from options or environment, matching register_service logic."""
-    if options.port is not None:
-        return options.port
-    port_str = os.getenv(options.port_env)
-    if port_str:
-        try:
-            return int(port_str)
-        except ValueError:
-            return 8000
-    return 8000
+class _ReadinessTokenMiddleware:
+    """Echo the readiness token header on responses to requests that present the matching token."""
+
+    def __init__(self, app: ASGIApp, *, token: str) -> None:
+        """Wrap the ASGI app with the per-instance readiness token."""
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Pass the request through, tagging the response when the probe token matches."""
+        if scope["type"] != "http" or not self._has_token(scope):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_token(message: Message) -> None:
+            """Append the token header to the response start message."""
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.append((_READINESS_TOKEN_HEADER.encode("latin-1"), self.token.encode("latin-1")))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_token)
+
+    def _has_token(self, scope: Scope) -> bool:
+        """Return whether the request carries this instance's readiness token."""
+        expected = (_READINESS_TOKEN_HEADER.encode("latin-1"), self.token.encode("latin-1"))
+        return any((name.lower(), value) == expected for name, value in scope.get("headers", []))
+
+
+def _parse_port(value: str | None) -> int | None:
+    """Parse a port from an environment value, returning None when unset or invalid."""
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _local_port_candidates(options: _RegistrationOptions) -> list[int]:
+    """Resolve the local ports to probe for readiness, most specific first."""
+    if options.local_port is not None:
+        return [options.local_port]
+    advertised_port = options.port if options.port is not None else _parse_port(os.getenv(options.port_env))
+    candidates = [_parse_port(os.getenv(options.local_port_env)), advertised_port, _DEFAULT_LOCAL_PORT]
+    return list(dict.fromkeys(port for port in candidates if port is not None))
 
 
 async def _wait_until_ready(
-    port: int, *, health_path: str | None = None, poll_interval: float = 0.5, timeout: float = 30.0
-) -> bool:
-    """Poll the local app until it is serving requests."""
+    ports: Sequence[int],
+    *,
+    token: str,
+    health_path: str | None = None,
+    poll_interval: float = 0.5,
+    timeout: float = 30.0,
+) -> int | None:
+    """Poll the candidate local ports until this app serves requests, returning the ready port or None."""
     import httpx
 
-    if health_path:
-        url = f"http://127.0.0.1:{port}{health_path}"
-        check_kind = "health"
-    else:
-        url = f"http://127.0.0.1:{port}/"
-        check_kind = "tcp"
+    path = health_path or "/"
+    check_kind = "health" if health_path else "tcp"
+    headers = {_READINESS_TOKEN_HEADER: token}
 
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, timeout=2.0)
-                if health_path:
-                    if response.status_code == 200:
-                        return True
-                else:
-                    # Any response means the server is accepting connections
-                    return True
-        except Exception:
-            pass
+        for port in ports:
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(f"http://127.0.0.1:{port}{path}", headers=headers, timeout=2.0)
+            except Exception:
+                continue
+            # Something else listening on a candidate port (e.g. the orchestrator itself) is not us
+            if response.headers.get(_READINESS_TOKEN_HEADER) != token:
+                continue
+            # In tcp mode any response means the server is accepting connections
+            if not health_path or response.status_code == 200:
+                return port
         await asyncio.sleep(poll_interval)
 
-    logger.warning("registration.readiness_timeout", port=port, check=check_kind, timeout=timeout)
-    return False
+    logger.warning("registration.readiness_timeout", ports=list(ports), check=check_kind, timeout=timeout)
+    return None
 
 
 def _fail_registration(app: FastAPI, reason: str) -> None:
@@ -992,18 +1054,19 @@ async def _register_after_ready(
     options: _RegistrationOptions, info: BaseModel, app: FastAPI, health_path: str | None
 ) -> None:
     """Wait for the app to be ready, then register with the orchestrator."""
-    port = _resolve_port(options)
-    ready = await _wait_until_ready(port, health_path=health_path)
-    if not ready:
+    ports = _local_port_candidates(options)
+    ready_port = await _wait_until_ready(ports, token=app.state.readiness_token, health_path=health_path)
+    if ready_port is None:
         if options.fail_on_error:
-            _fail_registration(app, f"App on port {port} never became ready, cannot register")
+            _fail_registration(app, f"App never became ready on local ports {ports}, cannot register")
         else:
             logger.error(
                 "registration.aborted",
-                port=port,
+                ports=ports,
                 message="App never became ready, skipping registration",
             )
         return
+    logger.debug("registration.ready", port=ready_port)
 
     # Shield registration from cancellation so that if the POST succeeds,
     # app.state.registration_info is always written before the task exits.

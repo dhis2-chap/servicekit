@@ -110,7 +110,7 @@ docker compose down
 
 1. **Service Starts**: Container starts and FastAPI app initializes
 2. **Hostname Detection**: Auto-detects hostname via `socket.gethostname()` (returns Docker container name/ID)
-3. **Port Resolution**: Uses `SERVICEKIT_PORT` env var or defaults to 8000
+3. **Port Resolution**: Advertises `SERVICEKIT_PORT` or defaults to 8000 (the local bind port is probed separately for readiness)
 4. **URL Construction**: Builds service URL: `http://<hostname>:<port>`
 5. **Registration Attempt**: Sends POST to orchestrator with payload:
    ```json
@@ -204,7 +204,8 @@ Services can configure keepalive behavior:
 |----------|---------|-------------|
 | `SERVICEKIT_ORCHESTRATOR_URL` | (required) | Orchestrator registration endpoint |
 | `SERVICEKIT_HOST` | auto-detected | Service hostname (override auto-detection) |
-| `SERVICEKIT_PORT` | 8000 | Service port |
+| `SERVICEKIT_PORT` | 8000 | Port advertised to the orchestrator |
+| `PORT` | (unset) | Port the app binds locally, probed for readiness (exported by `run_app`) |
 | `SERVICEKIT_REGISTRATION_KEY` | (optional) | Service key for authenticated registration |
 
 ### Builder Configuration
@@ -223,6 +224,8 @@ Services can configure keepalive behavior:
     timeout=10.0,
     service_key=None,                   # Service key for authentication
     service_key_env="SERVICEKIT_REGISTRATION_KEY",
+    local_port=None,                    # Local bind port for the readiness probe
+    local_port_env="PORT",
 )
 ```
 
@@ -458,13 +461,17 @@ services:
       # SERVICEKIT_PORT defaults to 8000 (correct for intra-container communication)
 ```
 
-**Important**: `SERVICEKIT_PORT` should match the **container's internal port** (8000), not the host-mapped port (8001). The orchestrator communicates with services using the internal Docker network.
+**Important**: `SERVICEKIT_PORT` is the port the **orchestrator** uses to reach the service. Here the orchestrator shares the Docker network, so that is the container port (8000). An orchestrator on the Docker host would instead need the host-mapped port (8001) with `SERVICEKIT_HOST=host.docker.internal`.
 
 ### Resolution Priority
+
+Advertised port:
 
 1. Direct `port` parameter in `.with_registration(port=...)`
 2. Environment variable `SERVICEKIT_PORT`
 3. Default to 8000
+
+Local port probed for readiness: `local_port` if set, otherwise `PORT`, the advertised port, and 8000 are tried in turn.
 
 ## Error Handling
 
@@ -606,13 +613,13 @@ docker compose logs svca | grep registration
 
 ### Port Mismatch
 
-Ensure `SERVICEKIT_PORT` matches container's internal port (not host-mapped port):
+Ensure `SERVICEKIT_PORT` is the port as seen from the orchestrator (the container port on a shared Docker network):
 
 ```yaml
 ports:
   - "8001:8000"  # Host:Container
 environment:
-  SERVICEKIT_PORT: "8000"  # Use container port
+  SERVICEKIT_PORT: "8000"  # Orchestrator on the same Docker network
 ```
 
 ## Related Examples
