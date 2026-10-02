@@ -1,9 +1,8 @@
-"""OpenTelemetry monitoring setup with auto-instrumentation."""
+"""OpenTelemetry monitoring setup: Prometheus metrics, SQLAlchemy instrumentation, FastAPI OpenTelemetry."""
 
 from fastapi import FastAPI
 from opentelemetry import metrics
 from opentelemetry.exporter.prometheus import PrometheusMetricReader
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.resources import Resource
@@ -28,7 +27,7 @@ def setup_monitoring(
     service_name: str | None = None,
     enable_traces: bool = False,
 ) -> PrometheusMetricReader:
-    """Setup OpenTelemetry with FastAPI and SQLAlchemy auto-instrumentation."""
+    """Setup the global Prometheus meter provider and SQLAlchemy instrumentation; FastAPI OpenTelemetry records HTTP."""
     global _meter_provider_initialized, _sqlalchemy_instrumented, _process_collector_registered, _metric_reader
 
     # Use app title as service name if not provided
@@ -53,11 +52,6 @@ def setup_monitoring(
         except ValueError:
             # Already registered
             pass
-
-    # Auto-instrument FastAPI - check if already instrumented
-    instrumentor = FastAPIInstrumentor()
-    if not instrumentor.is_instrumented_by_opentelemetry:
-        instrumentor.instrument_app(app)
 
     # Auto-instrument SQLAlchemy - only once globally
     if not _sqlalchemy_instrumented:
@@ -86,19 +80,12 @@ def setup_monitoring(
 
 
 def teardown_monitoring() -> None:
-    """Teardown OpenTelemetry instrumentation and reset module state."""
-    global _meter_provider_initialized, _sqlalchemy_instrumented, _process_collector_registered, _metric_reader
+    """Teardown SQLAlchemy instrumentation; the global meter provider cannot be replaced, so its reader stays."""
+    global _sqlalchemy_instrumented
 
-    _meter_provider_initialized = False
     _sqlalchemy_instrumented = False
-    _process_collector_registered = False
-    _metric_reader = None
 
     try:
-        # Uninstrument FastAPI
-        FastAPIInstrumentor().uninstrument()
-
-        # Uninstrument SQLAlchemy
         SQLAlchemyInstrumentor().uninstrument()
 
         logger.info("monitoring.disabled")

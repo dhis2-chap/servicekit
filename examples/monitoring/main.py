@@ -15,7 +15,7 @@ app = (
     .with_database()
     .with_health()
     .with_system()
-    .with_monitoring()  # Enables OpenTelemetry with Prometheus endpoint at /metrics
+    .with_monitoring(service_name="monitoring-example")  # Monitoring is on by default; this sets the service name
     .with_logging()
     .with_landing_page()
     .build()

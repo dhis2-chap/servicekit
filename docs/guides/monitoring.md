@@ -1,30 +1,29 @@
 # Monitoring with OpenTelemetry and Prometheus
 
-Servicekit provides built-in monitoring through OpenTelemetry instrumentation with automatic Prometheus metrics export.
+Servicekit provides built-in monitoring through OpenTelemetry with automatic Prometheus metrics export. Monitoring is enabled by default.
 
 ## Quick Start
 
-Enable monitoring in your service with a single method call:
+Every service built with `BaseServiceBuilder` exposes Prometheus metrics at `/metrics`:
 
 ```python
 from servicekit.api import BaseServiceBuilder, ServiceInfo
 
 app = (
     BaseServiceBuilder(info=ServiceInfo(id="my-service", display_name="My Service"))
-    .with_monitoring()  # Enables OpenTelemetry + Prometheus endpoint
     .with_database()
     .with_health()
     .build()
 )
 ```
 
-Your service now exposes Prometheus metrics at `/metrics`.
+Call `.with_monitoring(...)` only to change the defaults, or `.with_monitoring(enabled=False)` to turn monitoring off.
 
 ## Features
 
 ### Automatic Instrumentation
 
-- **FastAPI**: HTTP request metrics (duration, status codes, paths)
+- **FastAPI**: HTTP request metrics (duration, status codes, routes) using FastAPI OpenTelemetry
 - **SQLAlchemy**: Database query metrics (connection pool, query duration)
 - **Python Runtime**: Garbage collection, memory usage, CPU time
 
@@ -38,7 +37,7 @@ Your service now exposes Prometheus metrics at `/metrics`.
 
 No manual instrumentation needed - Servicekit automatically:
 
-- Instruments all FastAPI routes
+- Records all FastAPI routes (scrapes of the metrics endpoint itself are excluded)
 - Tracks SQLAlchemy database operations
 - Exposes Python runtime metrics
 - Handles OpenTelemetry lifecycle
@@ -47,11 +46,7 @@ No manual instrumentation needed - Servicekit automatically:
 
 ### Basic Configuration
 
-```python
-.with_monitoring()  # Uses defaults
-```
-
-**Defaults:**
+Monitoring is on without any call. **Defaults:**
 - Metrics endpoint: `/metrics`
 - Service name: From `ServiceInfo.display_name`
 - Tags: `["Observability"]`
@@ -66,8 +61,29 @@ No manual instrumentation needed - Servicekit automatically:
 )
 ```
 
+### Disabling Monitoring
+
+```python
+.with_monitoring(enabled=False)
+```
+
+This removes the `/metrics` endpoint and turns FastAPI OpenTelemetry off, including the OTLP export described below.
+
+### OTLP Export
+
+FastAPI OpenTelemetry reads the standard OpenTelemetry environment variables. When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, it adds OTLP exporters for traces, metrics and logs at startup, next to the Prometheus endpoint:
+
+```bash
+OTEL_SERVICE_NAME=my-service
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+OTEL_EXPORTER_OTLP_HEADERS=api-key=YOUR_KEY  # optional
+```
+
+Only the OTLP `http/protobuf` protocol is supported for this automatic setup. See the [FastAPI OpenTelemetry docs](https://fastapi.tiangolo.com/advanced/opentelemetry/) for details.
+
 ### Parameters
 
+- **enabled** (`bool`): Turn monitoring on or off. Default: `True`
 - **prefix** (`str`): Metrics endpoint path. Default: `/metrics`
 - **tags** (`List[str]`): OpenAPI tags for metrics endpoint. Default: `["Observability"]`
 - **service_name** (`str | None`): Service name in metrics labels. Default: from `ServiceInfo`
@@ -81,10 +97,10 @@ No manual instrumentation needed - Servicekit automatically:
 curl http://localhost:8000/metrics
 
 # Filter specific metrics
-curl http://localhost:8000/metrics | grep http_request
+curl http://localhost:8000/metrics | grep http_server
 
 # Monitor continuously
-watch -n 1 'curl -s http://localhost:8000/metrics | grep http_request_duration'
+watch -n 1 'curl -s http://localhost:8000/metrics | grep http_server_request_duration'
 ```
 
 ### Expected Output
@@ -96,7 +112,7 @@ python_gc_objects_collected_total{generation="0"} 234.0
 
 # HELP http_server_request_duration_seconds HTTP request duration
 # TYPE http_server_request_duration_seconds histogram
-http_server_request_duration_seconds_bucket{http_method="GET",http_status_code="200",le="0.005"} 45.0
+http_server_request_duration_seconds_bucket{http_request_method="GET",http_response_status_code="200",http_route="/api/v1/info",le="0.005",otel_scope_name="fastapi",...} 45.0
 
 # HELP db_client_connections_usage Number of connections that are currently in use
 # TYPE db_client_connections_usage gauge
@@ -238,7 +254,7 @@ volumes:
 
 **HTTP Request Rate:**
 ```promql
-rate(http_server_requests_total{job="servicekit-services"}[5m])
+rate(http_server_request_duration_seconds_count{job="servicekit-services"}[5m])
 ```
 
 **Request Duration (p95):**
@@ -256,18 +272,19 @@ db_client_connections_limit
 
 **Error Rate:**
 ```promql
-rate(http_server_requests_total{http_status_code=~"5.."}[5m])
+rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m])
 ```
 
 ## Available Metrics
 
 ### HTTP Metrics (FastAPI)
 
-- `http_server_request_duration_seconds` - Request duration histogram
-- `http_server_requests_total` - Total requests counter
+Recorded by FastAPI OpenTelemetry, following the stable HTTP semantic conventions:
+
+- `http_server_request_duration_seconds` - Request duration histogram (use `_count` for request totals)
 - `http_server_active_requests` - Active requests gauge
 
-**Labels**: `http_method`, `http_status_code`, `http_route`
+**Labels**: `http_request_method`, `http_response_status_code`, `http_route`, `url_scheme`, `network_protocol_version`
 
 ### Database Metrics (SQLAlchemy)
 
@@ -344,7 +361,7 @@ For detailed health check configuration and usage, see the [Health Checks Guide]
 
 **Problem**: `/metrics` endpoint not found.
 
-**Solution**: Ensure you called `.with_monitoring()` in your BaseServiceBuilder chain.
+**Solution**: Check that the builder chain does not call `.with_monitoring(enabled=False)`, and that `prefix` was not changed.
 
 ### No Metrics Appear
 
@@ -352,8 +369,8 @@ For detailed health check configuration and usage, see the [Health Checks Guide]
 
 **Solution**:
 1. Make some requests to your API endpoints
-2. Verify FastAPI instrumentation with: `curl http://localhost:8000/api/v1/configs`
-3. Check metrics again: `curl http://localhost:8000/metrics | grep http_request`
+2. Generate traffic with: `curl http://localhost:8000/api/v1/configs`
+3. Check metrics again: `curl http://localhost:8000/metrics | grep http_server`
 
 ### Prometheus Cannot Scrape
 
@@ -378,7 +395,7 @@ For detailed health check configuration and usage, see the [Health Checks Guide]
 
 - **Health Checks**: Add health monitoring with `.with_health()` - see [Health Checks Guide](health-checks.md)
 - **Alerting**: Set up Prometheus Alertmanager for notifications
-- **Distributed Tracing**: Future support for OpenTelemetry traces (see ROADMAP.md)
+- **Distributed Tracing**: Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export FastAPI request traces over OTLP
 - **Custom Metrics**: Use `get_meter()` for application-specific metrics
 - **SLOs**: Define Service Level Objectives based on metrics
 
