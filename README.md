@@ -79,7 +79,7 @@ app = (
     .with_database(url)               # Database configuration
     .with_jobs(max_concurrency=10)   # Job scheduler
     .with_auth()                      # API key authentication
-    .with_monitoring()                # Prometheus metrics
+    .with_monitoring()                # Prometheus metrics (on by default)
     .with_app("./webapp")             # Static web app
     .include_router(custom_router)   # Custom routes
     .build()

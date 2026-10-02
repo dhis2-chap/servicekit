@@ -219,7 +219,7 @@ def _middleware_layers(app: Any) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_readiness_token_keeps_monitoring_instrumentation():
-    """Registration with monitoring keeps OpenTelemetry HTTP instrumentation and still tags probes."""
+    """Registration with monitoring keeps FastAPI OpenTelemetry HTTP metrics and still tags probes."""
     teardown_monitoring()
     try:
         app = (
@@ -230,12 +230,13 @@ async def test_readiness_token_keeps_monitoring_instrumentation():
         )
         layers = _middleware_layers(app.build_middleware_stack())
         assert layers[0] == "_ReadinessTokenMiddleware"
-        assert "OpenTelemetryMiddleware" in layers
 
         token = app.state.readiness_token
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/v1/info", headers={_READINESS_TOKEN_HEADER: token})
+            metrics_response = await client.get("/metrics")
         assert response.headers[_READINESS_TOKEN_HEADER] == token
+        assert 'http_route="/api/v1/info"' in metrics_response.text
     finally:
         teardown_monitoring()
 

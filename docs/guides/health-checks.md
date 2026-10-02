@@ -471,7 +471,7 @@ Combine health checks with Prometheus metrics:
 app = (
     BaseServiceBuilder(info=info)
     .with_health(checks={"database": check_database})
-    .with_monitoring()  # Prometheus metrics at /metrics
+    .with_monitoring()  # Prometheus metrics at /metrics (on by default)
     .build()
 )
 ```
@@ -532,7 +532,7 @@ All operational endpoints use root-level paths for easy discovery.
 
 ## Next Steps
 
-- **Metrics**: Add Prometheus monitoring with `.with_monitoring()`
+- **Metrics**: Prometheus monitoring is on by default; configure it with `.with_monitoring()`
 - **Alerting**: Set up alerts based on health status
 - **Dashboards**: Create real-time monitoring dashboards with SSE
 - **Custom Checks**: Implement checks for your specific dependencies

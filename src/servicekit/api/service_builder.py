@@ -8,13 +8,14 @@ import re
 import secrets
 import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import MutableMapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncContextManager, AsyncGenerator, Awaitable, Callable, Self
 
 from fastapi import APIRouter, FastAPI
+from fastapi.telemetry import TelemetryConfig
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import text
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -168,7 +169,12 @@ class BaseServiceBuilder:
         self._system_options: _SystemOptions | None = None
         self._job_options: JobOptions | None = None
         self._auth_options: _AuthOptions | None = None
-        self._monitoring_options: _MonitoringOptions | None = None
+        self._monitoring_options: _MonitoringOptions | None = _MonitoringOptions(
+            prefix="/metrics",
+            tags=["Observability"],
+            service_name=None,
+            enable_traces=False,
+        )
         self._registration_options: _RegistrationOptions | None = None
         self._app_configs: list[App] = []
         self._custom_routers: list[APIRouter] = []
@@ -316,13 +322,17 @@ class BaseServiceBuilder:
 
     def with_monitoring(
         self,
+        enabled: bool = True,
         *,
         prefix: str = "/metrics",
         tags: list[str] | None = None,
         service_name: str | None = None,
         enable_traces: bool = False,
     ) -> Self:
-        """Enable OpenTelemetry monitoring with Prometheus endpoint and auto-instrumentation."""
+        """Configure OpenTelemetry monitoring (enabled by default); pass enabled=False to turn it off."""
+        if not enabled:
+            self._monitoring_options = None
+            return self
         self._monitoring_options = _MonitoringOptions(
             prefix=prefix,
             tags=list(tags) if tags is not None else ["Observability"],
@@ -426,6 +436,7 @@ class BaseServiceBuilder:
             description=self._app_description,
             version=self._version,
             lifespan=lifespan,
+            telemetry=self._build_telemetry_config(),
         )
         app.state.database_url = self._database_url
 
@@ -552,13 +563,25 @@ class BaseServiceBuilder:
         for dependency, override in self._dependency_overrides.items():
             app.dependency_overrides[dependency] = override
 
-        # Last, so it wraps any build_middleware_stack patch made above (OpenTelemetry instrumentation
-        # expects the stack it builds to start with ServerErrorMiddleware)
+        # Last, so it wraps any build_middleware_stack patch made above
         if self._registration_options is not None:
             app.state.readiness_token = secrets.token_hex(16)
             app.build_middleware_stack = _wrap_with_readiness_token(app)  # type: ignore[method-assign]
 
         return app
+
+    def _build_telemetry_config(self) -> TelemetryConfig:
+        """Build FastAPI OpenTelemetry settings: skip metrics scrapes when enabled, turn everything off when not."""
+        if self._monitoring_options is None:
+            return {"tracing": False, "metrics": False, "logs": False, "auto_configure": False}
+        metrics_prefix = self._monitoring_options.prefix
+
+        def exclude_metrics_scrape(scope: MutableMapping[str, Any]) -> bool:
+            """Skip telemetry for requests to the metrics endpoint."""
+            path = str(scope.get("path", ""))
+            return path == metrics_prefix or path.startswith(f"{metrics_prefix}/")
+
+        return {"exclude": exclude_metrics_scrape}
 
     # --------------------------------------------------------------------- Extension points
 

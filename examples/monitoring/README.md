@@ -57,15 +57,12 @@ docker compose down
 Visit http://localhost:8000/metrics to see raw Prometheus metrics:
 
 ```
-# HELP http_request_duration_seconds HTTP request duration
-# TYPE http_request_duration_seconds histogram
-http_request_duration_seconds_bucket{le="0.005",method="GET",path="/health"} 42.0
-http_request_duration_seconds_bucket{le="0.01",method="GET",path="/health"} 42.0
+# HELP http_server_request_duration_seconds Duration of HTTP server requests.
+# TYPE http_server_request_duration_seconds histogram
+http_server_request_duration_seconds_bucket{http_request_method="GET",http_response_status_code="200",http_route="/health",le="0.005",...} 42.0
+http_server_request_duration_seconds_bucket{http_request_method="GET",http_response_status_code="200",http_route="/health",le="0.01",...} 42.0
 ...
-
-# HELP http_requests_total Total HTTP requests
-# TYPE http_requests_total counter
-http_requests_total{method="GET",path="/health",status="200"} 42.0
+http_server_request_duration_seconds_count{http_request_method="GET",http_response_status_code="200",http_route="/health",...} 42.0
 
 # HELP sqlalchemy_pool_size Connection pool size
 # TYPE sqlalchemy_pool_size gauge
@@ -98,8 +95,8 @@ prometheus --config.file=prometheus.yml
 4. **Access Prometheus UI**: http://localhost:9090
 
 5. **Query metrics**:
-   - `rate(http_request_duration_seconds_sum[5m])` - Request rate
-   - `http_requests_total` - Total requests
+   - `rate(http_server_request_duration_seconds_count[5m])` - Request rate
+   - `http_server_request_duration_seconds_count` - Total requests
    - `sqlalchemy_pool_size` - Database connection pool
 
 ### With Grafana
@@ -110,10 +107,12 @@ See `examples/docker/compose.monitoring.yml` for a full monitoring stack with Gr
 
 ### HTTP Metrics
 
-- `http_request_duration_seconds` (histogram) - Request latency
-  - Labels: `method`, `path`
-- `http_requests_total` (counter) - Total requests
-  - Labels: `method`, `path`, `status`
+Recorded by FastAPI OpenTelemetry:
+
+- `http_server_request_duration_seconds` (histogram) - Request latency; `_count` gives total requests
+  - Labels: `http_request_method`, `http_response_status_code`, `http_route`
+- `http_server_active_requests` (gauge) - In-flight requests
+  - Labels: `http_request_method`
 
 ### Database Metrics
 
@@ -133,17 +132,17 @@ See `examples/docker/compose.monitoring.yml` for a full monitoring stack with Gr
 
 ### Average Request Duration (5m)
 ```promql
-rate(http_request_duration_seconds_sum[5m]) / rate(http_request_duration_seconds_count[5m])
+rate(http_server_request_duration_seconds_sum[5m]) / rate(http_server_request_duration_seconds_count[5m])
 ```
 
 ### Request Rate by Status Code
 ```promql
-sum by (status) (rate(http_requests_total[5m]))
+sum by (http_response_status_code) (rate(http_server_request_duration_seconds_count[5m]))
 ```
 
 ### 95th Percentile Request Duration
 ```promql
-histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
+histogram_quantile(0.95, rate(http_server_request_duration_seconds_bucket[5m]))
 ```
 
 ### Database Connection Pool Usage
@@ -163,22 +162,23 @@ for i in {1..100}; do curl -s http://localhost:8000/health > /dev/null; done
 for i in {1..50}; do curl -s http://localhost:8000/api/v1/system > /dev/null; done
 
 # View updated metrics
-curl http://localhost:8000/metrics | grep http_requests_total
+curl http://localhost:8000/metrics | grep http_server_request_duration_seconds_count
 ```
 
 ## OpenTelemetry Integration
 
 The service automatically instruments:
 
-- **FastAPI**: All HTTP routes and middleware
+- **FastAPI**: All HTTP routes, using FastAPI OpenTelemetry
 - **SQLAlchemy**: Database queries and connection pool
-- **ASGI**: Low-level request/response handling
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to also export traces, metrics and logs over OTLP.
 
 Traces include:
 - Request method, path, status code
 - SQL queries and execution time
 - Database connection acquisition
-- Middleware execution
+- Dependency resolution, endpoint and serialization spans
 
 ## Structured Logging
 
@@ -238,7 +238,7 @@ See `examples/docker/monitoring/grafana/dashboards/` for examples.
 
 ```yaml
 alert: HighErrorRate
-expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+expr: rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m]) > 0.05
 for: 5m
 labels:
   severity: warning
@@ -262,8 +262,8 @@ annotations:
 
 ### Metrics Not Appearing
 
-1. Ensure `.with_monitoring()` is called in builder
-2. Check logs for instrumentation errors
+1. Ensure the builder does not call `.with_monitoring(enabled=False)`
+2. Check logs for `monitoring.enabled`
 3. Verify `/metrics` endpoint returns data
 4. Check Prometheus scrape targets status
 
@@ -276,7 +276,7 @@ annotations:
 
 ### Slow Requests
 
-1. Use `http_request_duration_seconds` histogram
+1. Use `http_server_request_duration_seconds` histogram
 2. Identify slow endpoints with `rate()` queries
 3. Check database query performance
 4. Review SQLAlchemy connection pool metrics
