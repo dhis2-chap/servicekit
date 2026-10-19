@@ -56,7 +56,8 @@ def setup_monitoring(
     # Auto-instrument SQLAlchemy - only once globally
     if not _sqlalchemy_instrumented:
         try:
-            SQLAlchemyInstrumentor().instrument()
+            # The instrumentor's declared range lags SQLAlchemy releases (0.66b1 stops below 2.1) and works on 2.1.
+            SQLAlchemyInstrumentor().instrument(skip_dep_check=True)
             _sqlalchemy_instrumented = True
         except RuntimeError:
             # Already instrumented

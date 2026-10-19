@@ -132,6 +132,16 @@ def test_setup_monitoring_handles_sqlalchemy_already_instrumented():
     setup_monitoring(app)
 
 
+def test_setup_monitoring_skips_the_sqlalchemy_version_check():
+    """Test that SQLAlchemy is instrumented even outside the instrumentor's declared version range."""
+    teardown_monitoring()
+    with patch("servicekit.api.monitoring.SQLAlchemyInstrumentor") as mock_instrumentor:
+        setup_monitoring(FastAPI(title="TestApp"))
+
+    mock_instrumentor.return_value.instrument.assert_called_once_with(skip_dep_check=True)
+    teardown_monitoring()
+
+
 def _builder() -> BaseServiceBuilder:
     """Create a minimal service builder for monitoring tests."""
     return BaseServiceBuilder(info=ServiceInfo(id="monitoring-svc", display_name="Monitoring"))
