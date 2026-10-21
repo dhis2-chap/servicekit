@@ -1,5 +1,5 @@
 # Registration Demo Dockerfile
-FROM ghcr.io/astral-sh/uv:0.9-python3.13-bookworm-slim AS builder
+FROM ghcr.io/astral-sh/uv:0.13-python3.13-trixie-slim AS builder
 
 WORKDIR /app
 
