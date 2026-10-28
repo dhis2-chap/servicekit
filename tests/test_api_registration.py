@@ -5,7 +5,7 @@ import json
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
+import httpx2 as httpx
 import pytest
 
 from servicekit.api.registration import (
@@ -148,7 +148,7 @@ async def test_successful_registration():
         }
     )
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
         info = ServiceInfo(id="test-service", display_name="Test Service", version="1.0.0")
@@ -189,7 +189,7 @@ async def test_retry_logic_success_on_second_attempt():
         }
     )
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(
             side_effect=[mock_response_fail, mock_response_success]
         )
@@ -217,7 +217,7 @@ async def test_fail_on_error_true_raises_exception():
         side_effect=httpx.HTTPStatusError("500 error", request=MagicMock(), response=MagicMock())
     )
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
         info = ServiceInfo(id="test-service", display_name="Test Service")
@@ -242,7 +242,7 @@ async def test_fail_on_error_false_continues():
         side_effect=httpx.HTTPStatusError("500 error", request=MagicMock(), response=MagicMock())
     )
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
         info = ServiceInfo(id="test-service", display_name="Test Service")
@@ -266,7 +266,7 @@ async def test_hostname_resolution_parameter():
     mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.AsyncClient") as mock_client, patch.dict(os.environ, {}, clear=True):
+    with patch("httpx2.AsyncClient") as mock_client, patch.dict(os.environ, {}, clear=True):
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
         info = ServiceInfo(id="test-service", display_name="Test Service")
@@ -290,7 +290,7 @@ async def test_hostname_resolution_auto_detect():
     mock_response.raise_for_status = MagicMock()
 
     with (
-        patch("httpx.AsyncClient") as mock_client,
+        patch("httpx2.AsyncClient") as mock_client,
         patch("socket.gethostname", return_value="container-name"),
         patch.dict(os.environ, {}, clear=True),
     ):
@@ -317,7 +317,7 @@ async def test_hostname_resolution_env_var():
     mock_response.raise_for_status = MagicMock()
 
     with (
-        patch("httpx.AsyncClient") as mock_client,
+        patch("httpx2.AsyncClient") as mock_client,
         patch("socket.gethostname", return_value="auto-detected-host"),
         patch.dict(os.environ, {"SERVICEKIT_HOST": "env-hostname"}),
     ):
@@ -369,7 +369,7 @@ async def test_port_resolution_parameter():
     mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
         info = ServiceInfo(id="test-service", display_name="Test Service")
@@ -392,7 +392,7 @@ async def test_port_resolution_env_var():
     mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.AsyncClient") as mock_client, patch.dict(os.environ, {"SERVICEKIT_PORT": "7777"}):
+    with patch("httpx2.AsyncClient") as mock_client, patch.dict(os.environ, {"SERVICEKIT_PORT": "7777"}):
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
         info = ServiceInfo(id="test-service", display_name="Test Service")
@@ -415,7 +415,7 @@ async def test_port_resolution_default():
     mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.AsyncClient") as mock_client, patch.dict(os.environ, {}, clear=True):
+    with patch("httpx2.AsyncClient") as mock_client, patch.dict(os.environ, {}, clear=True):
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
         info = ServiceInfo(id="test-service", display_name="Test Service")
@@ -439,7 +439,7 @@ async def test_custom_env_var_names():
     mock_response.raise_for_status = MagicMock()
 
     with (
-        patch("httpx.AsyncClient") as mock_client,
+        patch("httpx2.AsyncClient") as mock_client,
         patch("socket.gethostname", side_effect=Exception("No auto-detect")),  # Prevent auto-detection
         patch.dict(
             os.environ,
@@ -477,7 +477,7 @@ async def test_custom_serviceinfo_serialization():
     mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
         info = CustomServiceInfo(
@@ -535,7 +535,7 @@ async def test_url_construction():
     mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
         info = ServiceInfo(id="test-service", display_name="Test Service")
@@ -558,7 +558,7 @@ async def test_timeout_parameter():
     mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
         info = ServiceInfo(id="test-service", display_name="Test Service")
@@ -592,7 +592,7 @@ async def test_registration_returns_info():
         }
     )
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
         info = ServiceInfo(id="test-service", display_name="Test Service", version="1.0.0")
@@ -643,7 +643,7 @@ async def test_start_keepalive():
         }
     )
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_response)
 
         # Start keepalive with short interval for testing
@@ -672,7 +672,7 @@ async def test_stop_keepalive():
     mock_response.raise_for_status = MagicMock()
     mock_response.json = MagicMock(return_value={"status": "alive"})
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_response)
 
         # Start keepalive
@@ -703,7 +703,7 @@ async def test_keepalive_handles_errors_gracefully():
         side_effect=httpx.HTTPStatusError("500 error", request=MagicMock(), response=MagicMock())
     )
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_response)
 
         # Start keepalive - should not crash despite errors
@@ -731,7 +731,7 @@ async def test_deregister_service_success():
     mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.delete = AsyncMock(return_value=mock_response)
 
         await deregister_service(
@@ -753,7 +753,7 @@ async def test_deregister_service_handles_errors():
         side_effect=httpx.HTTPStatusError("404 error", request=MagicMock(), response=MagicMock())
     )
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.delete = AsyncMock(return_value=mock_response)
 
         # Should not raise exception, just log warning
@@ -772,7 +772,7 @@ async def test_registration_with_service_key_parameter():
     mock_response.raise_for_status = MagicMock()
     mock_response.json = MagicMock(return_value={"id": "01K83B5V85PQZ1HTH4DQ7NC9JM", "status": "registered"})
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
         info = ServiceInfo(id="test-service", display_name="Test Service", version="1.0.0")
@@ -801,7 +801,7 @@ async def test_registration_with_service_key_from_env():
     mock_response.json = MagicMock(return_value={"id": "01K83B5V85PQZ1HTH4DQ7NC9JM", "status": "registered"})
 
     with (
-        patch("httpx.AsyncClient") as mock_client,
+        patch("httpx2.AsyncClient") as mock_client,
         patch.dict(os.environ, {"SERVICEKIT_REGISTRATION_KEY": "env-secret-key"}),
     ):
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
@@ -831,7 +831,7 @@ async def test_registration_with_custom_service_key_env():
     mock_response.json = MagicMock(return_value={"id": "01K83B5V85PQZ1HTH4DQ7NC9JM", "status": "registered"})
 
     with (
-        patch("httpx.AsyncClient") as mock_client,
+        patch("httpx2.AsyncClient") as mock_client,
         patch.dict(os.environ, {"MY_CUSTOM_SERVICE_KEY": "custom-env-key"}),
     ):
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
@@ -861,7 +861,7 @@ async def test_registration_without_service_key():
     mock_response.raise_for_status = MagicMock()
     mock_response.json = MagicMock(return_value={"id": "01K83B5V85PQZ1HTH4DQ7NC9JM", "status": "registered"})
 
-    with patch("httpx.AsyncClient") as mock_client, patch.dict(os.environ, {}, clear=True):
+    with patch("httpx2.AsyncClient") as mock_client, patch.dict(os.environ, {}, clear=True):
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
         info = ServiceInfo(id="test-service", display_name="Test Service", version="1.0.0")
@@ -888,7 +888,7 @@ async def test_service_key_parameter_overrides_env():
     mock_response.json = MagicMock(return_value={"id": "01K83B5V85PQZ1HTH4DQ7NC9JM", "status": "registered"})
 
     with (
-        patch("httpx.AsyncClient") as mock_client,
+        patch("httpx2.AsyncClient") as mock_client,
         patch.dict(os.environ, {"SERVICEKIT_REGISTRATION_KEY": "env-key"}),
     ):
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
@@ -918,7 +918,7 @@ async def test_keepalive_sends_service_key():
     mock_response.raise_for_status = MagicMock()
     mock_response.json = MagicMock(return_value={"status": "alive", "last_ping_at": "2025-01-01T00:00:00Z"})
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_response)
 
         # Start keepalive with service key
@@ -950,7 +950,7 @@ async def test_deregister_sends_service_key():
     mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.delete = AsyncMock(return_value=mock_response)
 
         await deregister_service(
@@ -1011,7 +1011,7 @@ async def test_keepalive_reregisters_on_404():
     }
 
     with (
-        patch("httpx.AsyncClient") as mock_client,
+        patch("httpx2.AsyncClient") as mock_client,
         patch("servicekit.api.registration.register_service", new_callable=AsyncMock) as mock_register,
     ):
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_put_response)
@@ -1053,7 +1053,7 @@ async def test_keepalive_grace_period_respected():
     }
 
     with (
-        patch("httpx.AsyncClient") as mock_client,
+        patch("httpx2.AsyncClient") as mock_client,
         patch("servicekit.api.registration.register_service", new_callable=AsyncMock) as mock_register,
     ):
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_put_response)
@@ -1089,7 +1089,7 @@ async def test_keepalive_reregistration_failure_retries():
     mock_put_response.raise_for_status = MagicMock(side_effect=error_404)
 
     with (
-        patch("httpx.AsyncClient") as mock_client,
+        patch("httpx2.AsyncClient") as mock_client,
         patch("servicekit.api.registration.register_service", new_callable=AsyncMock) as mock_register,
     ):
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_put_response)
@@ -1125,7 +1125,7 @@ async def test_keepalive_non_404_does_not_reregister():
     mock_put_response.raise_for_status = MagicMock(side_effect=error_500)
 
     with (
-        patch("httpx.AsyncClient") as mock_client,
+        patch("httpx2.AsyncClient") as mock_client,
         patch("servicekit.api.registration.register_service", new_callable=AsyncMock) as mock_register,
     ):
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_put_response)
@@ -1156,7 +1156,7 @@ async def test_keepalive_no_registration_kwargs_skips_reregistration():
     mock_put_response = MagicMock()
     mock_put_response.raise_for_status = MagicMock(side_effect=error_404)
 
-    with patch("httpx.AsyncClient") as mock_client:
+    with patch("httpx2.AsyncClient") as mock_client:
         mock_client.return_value.__aenter__.return_value.put = AsyncMock(return_value=mock_put_response)
 
         # Start without registration_kwargs -- backward compatible behavior
@@ -1209,7 +1209,7 @@ async def test_keepalive_reregistration_posts_full_service_info():
         kwargs["transport"] = transport
         return original_client(*args, **kwargs)  # type: ignore[arg-type]
 
-    with patch("httpx.AsyncClient", make_client):
+    with patch("httpx2.AsyncClient", make_client):
         handle = await start_keepalive(
             ping_url="http://orchestrator:9000/services/test-service/$ping",
             service_id="test-service",

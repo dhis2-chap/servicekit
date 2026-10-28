@@ -998,7 +998,7 @@ async def _wait_until_ready(
     timeout: float = 30.0,
 ) -> int | None:
     """Poll the candidate local ports until this app serves requests, returning the ready port or None."""
-    import httpx
+    import httpx2 as httpx
 
     path = health_path or "/"
     check_kind = "health" if health_path else "tcp"
