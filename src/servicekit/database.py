@@ -211,8 +211,9 @@ class SqliteDatabase(Database):
             try:
                 async with self.engine.begin() as conn:
                     await conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE);")
-            except Exception:
-                pass  # Don't fail dispose on checkpoint error
+            except Exception as e:
+                # Don't fail dispose on checkpoint error
+                get_logger(__name__).warning("database.wal_checkpoint_failed", error=str(e))
         await super().dispose()
 
 

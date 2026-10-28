@@ -39,7 +39,7 @@ type DependencyOverride = Callable[..., object]
 type LifespanFactory = Callable[[FastAPI], AsyncContextManager[None]]
 
 # Header the readiness probe sends and expects echoed back, so it only accepts its own app
-_READINESS_TOKEN_HEADER = "x-servicekit-readiness-token"
+_READINESS_TOKEN_HEADER = "x-servicekit-readiness-token"  # noqa: S105
 _DEFAULT_LOCAL_PORT = 8000
 
 
@@ -1010,7 +1010,7 @@ async def _wait_until_ready(
             try:
                 async with httpx.AsyncClient() as client:
                     response = await client.get(f"http://127.0.0.1:{port}{path}", headers=headers, timeout=2.0)
-            except Exception:
+            except httpx.TransportError:
                 continue
             # Something else listening on a candidate port (e.g. the orchestrator itself) is not us
             if response.headers.get(_READINESS_TOKEN_HEADER) != token:
