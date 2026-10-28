@@ -73,7 +73,7 @@ line-length = 120
 
 [tool.ruff.lint]
 fixable = ["ALL"]
-select = ["E", "W", "F", "I", "D"]
+select = ["E", "W", "F", "I", "D", "S"]
 ignore = ["D203", "D213"]
 
 [tool.ruff.lint.isort]
@@ -83,7 +83,7 @@ known-third-party = ["alembic"]
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["D"]
+"tests/**/*.py" = ["D", "S101", "S104", "S105", "S108", "S603", "S607"]
 "**/__init__.py" = ["D104"]
 "src/**/*.py" = ["D102", "D105", "D107"]
 "examples/**/*.py" = []

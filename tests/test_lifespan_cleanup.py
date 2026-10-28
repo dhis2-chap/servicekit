@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
+from httpx2 import ASGITransport, AsyncClient
 
 from servicekit import SqliteDatabaseBuilder
 from servicekit.api.service_builder import BaseServiceBuilder, ServiceInfo

@@ -4,7 +4,7 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-import httpx
+import httpx2 as httpx
 import pytest
 from fastapi import FastAPI
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
@@ -56,7 +56,7 @@ def _make_app() -> FastAPI:
 def _patch_probe_transport(handler: Any) -> Any:
     """Route the readiness probe's httpx clients through a mock transport handler."""
     real_client = httpx.AsyncClient
-    return patch("httpx.AsyncClient", lambda: real_client(transport=httpx.MockTransport(handler)))
+    return patch("httpx2.AsyncClient", lambda: real_client(transport=httpx.MockTransport(handler)))
 
 
 def _own_response(status_code: int = 200) -> httpx.Response:
@@ -200,7 +200,7 @@ async def test_readiness_probe_passes_middleware_added_after_build():
     app.add_middleware(HTTPSRedirectMiddleware)
     real_client = httpx.AsyncClient
 
-    with patch("httpx.AsyncClient", lambda: real_client(transport=httpx.ASGITransport(app=app))):
+    with patch("httpx2.AsyncClient", lambda: real_client(transport=httpx.ASGITransport(app=app))):
         result = await _wait_until_ready(
             [8000], token=app.state.readiness_token, health_path=None, poll_interval=0.05, timeout=1.0
         )

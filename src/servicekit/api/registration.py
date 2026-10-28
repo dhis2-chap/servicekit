@@ -6,7 +6,7 @@ import socket
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
+import httpx2 as httpx
 from pydantic import BaseModel, ConfigDict, SerializeAsAny
 
 from servicekit.logging import get_logger

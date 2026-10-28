@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator
 import pytest
 import ulid
 from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
+from httpx2 import ASGITransport, AsyncClient
 
 from servicekit.api import BaseServiceBuilder, JobOptions, ServiceInfo
 from servicekit.scheduler import InMemoryScheduler, Scheduler
